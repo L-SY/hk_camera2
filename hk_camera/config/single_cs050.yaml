@@ -1,6 +1,6 @@
 hk_camera_node:
   ros__parameters:
-    loop_rate_hz: 200
+    loop_rate_hz: 60
     camera_name: "cs050"
     serial_number: "DA6320570"
     exposure_auto: true

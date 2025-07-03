@@ -92,8 +92,11 @@ bool CameraManager::createHandle(const MV_CC_DEVICE_INFO *info,
     return false;
   }
 
-  MV_CC_SetEnumValue(ctx.handle, "TriggerMode", 1);
-  MV_CC_SetEnumValue(ctx.handle, "TriggerSource", MV_TRIGGER_SOURCE_SOFTWARE);
+  // MV_CC_SetEnumValue(ctx.handle, "TriggerMode", 1);
+  // MV_CC_SetEnumValue(ctx.handle, "TriggerSource", MV_TRIGGER_SOURCE_SOFTWARE);
+  // MV_CC_SetBoolValue(ctx.handle, "AcquisitionFrameRateEnable", false);
+
+  MV_CC_SetEnumValue(ctx.handle, "TriggerMode", 0);
   MV_CC_SetBoolValue(ctx.handle, "AcquisitionFrameRateEnable", false);
 
   MV_CC_RegisterImageCallBackEx(ctx.handle, imageCallback, &ctx);
@@ -172,65 +175,14 @@ void CameraManager::enqueueImage(CameraContext &ctx,
   int L = info->nFrameLen;
   cv::Mat img;
 
-  // 打印像素格式调试信息
-  std::cout << "[DEBUG] Camera pixel format: 0x" << std::hex << info->enPixelType << std::dec 
-            << ", Width: " << W << ", Height: " << H << ", Length: " << L << std::endl;
-
   // 处理8位Bayer格式
   if (info->enPixelType == PixelType_Gvsp_BayerRG8) {
     cv::Mat bayer_img(H, W, CV_8UC1, data);
     cv::cvtColor(bayer_img, img, cv::COLOR_BayerBG2BGR);  // 8位BayerRG也用BG模式修正颜色
-    std::cout << "[DEBUG] OpenCV 8-bit Bayer RG (as BG) to BGR conversion" << std::endl;
-  }
-  else if (info->enPixelType == PixelType_Gvsp_BayerGR8) {
-    cv::Mat bayer_img(H, W, CV_8UC1, data);
-    cv::cvtColor(bayer_img, img, cv::COLOR_BayerRG2BGR);  // GR用RG模式
-    std::cout << "[DEBUG] OpenCV 8-bit Bayer GR (as RG) to BGR conversion" << std::endl;
-  }
-  else if (info->enPixelType == PixelType_Gvsp_BayerGB8) {
-    cv::Mat bayer_img(H, W, CV_8UC1, data);
-    cv::cvtColor(bayer_img, img, cv::COLOR_BayerGR2BGR);  // GB用GR模式
-    std::cout << "[DEBUG] OpenCV 8-bit Bayer GB (as GR) to BGR conversion" << std::endl;
-  }
-  else if (info->enPixelType == PixelType_Gvsp_BayerBG8) {
-    cv::Mat bayer_img(H, W, CV_8UC1, data);
-    cv::cvtColor(bayer_img, img, cv::COLOR_BayerGB2BGR);  // BG用GB模式
-    std::cout << "[DEBUG] OpenCV 8-bit Bayer BG (as GB) to BGR conversion" << std::endl;
-  }
-  // 处理10位Bayer格式
-  else if (info->enPixelType == PixelType_Gvsp_BayerRG10) {
-    // 10位数据需要转换为16位然后缩放到8位
-    cv::Mat bayer16(H, W, CV_16UC1, data);
-    cv::Mat bayer8;
-    bayer16.convertTo(bayer8, CV_8UC1, 1.0/4.0);  // 10位->8位 (除以4)
-    cv::cvtColor(bayer8, img, cv::COLOR_BayerBG2BGR);  // 尝试BG模式修正颜色
-    std::cout << "[DEBUG] OpenCV 10-bit Bayer RG (as BG) to BGR conversion" << std::endl;
-  }
-  else if (info->enPixelType == PixelType_Gvsp_BayerGR10) {
-    cv::Mat bayer16(H, W, CV_16UC1, data);
-    cv::Mat bayer8;
-    bayer16.convertTo(bayer8, CV_8UC1, 1.0/4.0);
-    cv::cvtColor(bayer8, img, cv::COLOR_BayerRG2BGR);
-    std::cout << "[DEBUG] OpenCV 10-bit Bayer GR (as RG) to BGR conversion" << std::endl;
-  }
-  else if (info->enPixelType == PixelType_Gvsp_BayerGB10) {
-    cv::Mat bayer16(H, W, CV_16UC1, data);
-    cv::Mat bayer8;
-    bayer16.convertTo(bayer8, CV_8UC1, 1.0/4.0);
-    cv::cvtColor(bayer8, img, cv::COLOR_BayerGR2BGR);
-    std::cout << "[DEBUG] OpenCV 10-bit Bayer GB (as GR) to BGR conversion" << std::endl;
-  }
-  else if (info->enPixelType == PixelType_Gvsp_BayerBG10) {
-    cv::Mat bayer16(H, W, CV_16UC1, data);
-    cv::Mat bayer8;
-    bayer16.convertTo(bayer8, CV_8UC1, 1.0/4.0);
-    cv::cvtColor(bayer8, img, cv::COLOR_BayerGB2BGR);
-    std::cout << "[DEBUG] OpenCV 10-bit Bayer BG (as GB) to BGR conversion" << std::endl;
   }
   else if (info->enPixelType == PixelType_Gvsp_Mono8) {
     // 单通道灰度图，直接使用
     img = cv::Mat(H, W, CV_8UC1, data).clone();
-    std::cout << "[DEBUG] Using Mono8 format directly" << std::endl;
   }
   else {
     // 尝试海康SDK的BGR转换作为备选方案
