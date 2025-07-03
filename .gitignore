@@ -1,0 +1,39 @@
+# 忽略构建中间件和临时文件夹
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.o
+*.obj
+*.so
+*.a
+*.dll
+*.exe
+*.log
+
+# 忽略缓存文件夹
+.cache/
+*.cache/
+
+# 忽略测试输出
+Testing/
+test_output/
+*.testlog
+
+# 忽略IDE和编辑器相关文件
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 忽略Python虚拟环境
+venv/
+.env/
+
+# 忽略macOS系统文件
+.DS_Store
+
+# 忽略其他常见临时文件
+*.tmp
+*.bak

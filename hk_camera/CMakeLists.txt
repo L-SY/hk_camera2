@@ -9,11 +9,15 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(OpenCV REQUIRED)
 
-# Add include directories
+# 添加海康SDK头文件路径
 include_directories(
   include
   ${OpenCV_INCLUDE_DIRS}
+  /opt/MVS/include
 )
+
+# 添加海康SDK库文件路径
+link_directories(/opt/MVS/lib/64)
 
 # Source files
 file(GLOB SOURCES "src/*.cpp")
@@ -21,10 +25,14 @@ file(GLOB SOURCES "src/*.cpp")
 # Create library
 add_library(${PROJECT_NAME} ${SOURCES})
 
-# Link dependencies (add other dependencies here if needed)
-target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS})
+target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} MvCameraControl)
 
-# Install header files and library
+# 添加test_single_camera可执行文件
+add_executable(test_single_camera test/test_single_camera.cpp)
+target_link_libraries(test_single_camera ${PROJECT_NAME} ${OpenCV_LIBS} MvCameraControl)
+install(TARGETS test_single_camera DESTINATION lib/${PROJECT_NAME})
+
+# 安装头文件和库
 install(
   DIRECTORY include/
   DESTINATION include/
@@ -44,5 +52,10 @@ if(BUILD_TESTING)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 endif()
+
+install(
+  DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}/
+)
 
 ament_package()
