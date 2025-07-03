@@ -8,28 +8,34 @@ using namespace std::chrono_literals;
 HKCameraNode::HKCameraNode(const rclcpp::NodeOptions& options)
     : Node("hk_camera_node", options) {
   declare_parameter<std::string>("config_file", "");
-  // 声明所有需要的参数
-  declare_parameter<int>("loop_rate_hz", 30);
-  declare_parameter<std::string>("camera_name", "cs050");
-  declare_parameter<std::string>("serial_number", "");
-  declare_parameter<bool>("exposure_auto", true);
-  declare_parameter<int>("exposure_min", 15);
-  declare_parameter<int>("exposure_max", 13319);
-  declare_parameter<int>("exposure_mode", 0);
-  declare_parameter<double>("exposure_value", 5000.0);
-  declare_parameter<bool>("gain_auto", true);
-  declare_parameter<double>("gain_min", 0.0);
-  declare_parameter<double>("gain_max", 22.0);
-  declare_parameter<double>("gain_value", 6.0);
-  declare_parameter<bool>("white_balance_auto", true);
-  declare_parameter<int>("roi_width", 2448);
-  declare_parameter<int>("roi_height", 2048);
-  declare_parameter<int>("roi_offset_x", 0);
-  declare_parameter<int>("roi_offset_y", 0);
   
   if (!load_configs()) {
     RCLCPP_FATAL(get_logger(), "Failed to load camera configs");
     return;
+  }
+  
+  // 声明全局参数
+  declare_parameter<int>("loop_rate_hz", 30);
+  
+  // 为每个相机声明独立的参数
+  for (size_t i = 0; i < configs_.size(); ++i) {
+    const auto& cfg = configs_[i];
+    std::string prefix = cfg.name + ".";
+    
+    declare_parameter<bool>(prefix + "exposure_auto", cfg.exposure_auto);
+    declare_parameter<int>(prefix + "exposure_min", static_cast<int>(cfg.auto_exposure_min));
+    declare_parameter<int>(prefix + "exposure_max", static_cast<int>(cfg.auto_exposure_max));
+    declare_parameter<int>(prefix + "exposure_mode", cfg.exposure_mode);
+    declare_parameter<double>(prefix + "exposure_value", static_cast<double>(cfg.exposure_value));
+    declare_parameter<bool>(prefix + "gain_auto", cfg.gain_auto);
+    declare_parameter<double>(prefix + "gain_min", static_cast<double>(cfg.auto_gain_min));
+    declare_parameter<double>(prefix + "gain_max", static_cast<double>(cfg.auto_gain_max));
+    declare_parameter<double>(prefix + "gain_value", static_cast<double>(cfg.gain_value));
+    declare_parameter<bool>(prefix + "white_balance_auto", cfg.balance_white_auto);
+    declare_parameter<int>(prefix + "roi_width", static_cast<int>(cfg.width));
+    declare_parameter<int>(prefix + "roi_height", static_cast<int>(cfg.height));
+    declare_parameter<int>(prefix + "roi_offset_x", static_cast<int>(cfg.offset_x));
+    declare_parameter<int>(prefix + "roi_offset_y", static_cast<int>(cfg.offset_y));
   }
   
   if (!cam_mgr_.init(configs_)) {
@@ -123,57 +129,66 @@ rcl_interfaces::msg::SetParametersResult HKCameraNode::on_param_change(const std
   for (const auto& param : params) {
     RCLCPP_INFO(get_logger(), "Parameter changed: %s", param.get_name().c_str());
     
-    // 更新对应的配置参数
-    if (!runtime_params_.empty()) {
-      auto& cfg = runtime_params_[0]; // 假设单相机配置
+    // 处理全局参数
+    if (param.get_name() == "loop_rate_hz") {
+      loop_rate_hz_ = param.as_int();
+      continue; // 循环频率不需要传递给相机
+    }
+    
+    // 处理相机特定参数
+    for (size_t i = 0; i < configs_.size(); ++i) {
+      const std::string prefix = configs_[i].name + ".";
       
-      if (param.get_name() == "exposure_auto") {
+      if (param.get_name().find(prefix) != 0) continue; // 不是当前相机的参数
+      
+      auto& cfg = runtime_params_[i];
+      std::string param_suffix = param.get_name().substr(prefix.length());
+      
+      if (param_suffix == "exposure_auto") {
         cfg.exposure_auto = param.as_bool();
-      } else if (param.get_name() == "exposure_value") {
+      } else if (param_suffix == "exposure_value") {
         cfg.exposure_value = static_cast<float>(param.as_double());
-      } else if (param.get_name() == "exposure_min") {
+      } else if (param_suffix == "exposure_min") {
         cfg.auto_exposure_min = static_cast<int64_t>(param.as_int());
-      } else if (param.get_name() == "exposure_max") {
+      } else if (param_suffix == "exposure_max") {
         cfg.auto_exposure_max = static_cast<int64_t>(param.as_int());
-      } else if (param.get_name() == "gain_auto") {
+      } else if (param_suffix == "gain_auto") {
         cfg.gain_auto = param.as_bool();
-      } else if (param.get_name() == "gain_value") {
+      } else if (param_suffix == "gain_value") {
         cfg.gain_value = static_cast<float>(param.as_double());
-      } else if (param.get_name() == "gain_min") {
+      } else if (param_suffix == "gain_min") {
         cfg.auto_gain_min = static_cast<float>(param.as_double());
-      } else if (param.get_name() == "gain_max") {
+      } else if (param_suffix == "gain_max") {
         cfg.auto_gain_max = static_cast<float>(param.as_double());
-      } else if (param.get_name() == "white_balance_auto") {
+      } else if (param_suffix == "white_balance_auto") {
         cfg.balance_white_auto = param.as_bool();
-      } else if (param.get_name() == "roi_width") {
+      } else if (param_suffix == "roi_width") {
         cfg.width = static_cast<int64_t>(param.as_int());
-      } else if (param.get_name() == "roi_height") {
+      } else if (param_suffix == "roi_height") {
         cfg.height = static_cast<int64_t>(param.as_int());
-      } else if (param.get_name() == "roi_offset_x") {
+      } else if (param_suffix == "roi_offset_x") {
         cfg.offset_x = static_cast<int64_t>(param.as_int());
-      } else if (param.get_name() == "roi_offset_y") {
+      } else if (param_suffix == "roi_offset_y") {
         cfg.offset_y = static_cast<int64_t>(param.as_int());
-      } else if (param.get_name() == "loop_rate_hz") {
-        loop_rate_hz_ = param.as_int();
-        continue; // 循环频率不需要传递给相机
       }
       
-      // 将更新的参数应用到相机
-      void* handle = cam_mgr_.getHandle(0);
+      // 将更新的参数应用到对应相机
+      void* handle = cam_mgr_.getHandle(static_cast<int>(i));
       if (handle) {
         int ret = cam_mgr_.setParameter(handle, cfg);
         if (ret != 0) { // MV_OK = 0
-          RCLCPP_WARN(get_logger(), "Failed to set camera parameter %s: 0x%X", 
-                      param.get_name().c_str(), ret);
+          RCLCPP_WARN(get_logger(), "Failed to set camera %s parameter %s: 0x%X", 
+                      configs_[i].name.c_str(), param.get_name().c_str(), ret);
           result.successful = false;
         } else {
-          RCLCPP_INFO(get_logger(), "Successfully updated camera parameter: %s", 
-                      param.get_name().c_str());
+          RCLCPP_INFO(get_logger(), "Successfully updated camera %s parameter: %s", 
+                      configs_[i].name.c_str(), param.get_name().c_str());
         }
       } else {
-        RCLCPP_WARN(get_logger(), "No camera handle available for parameter update");
+        RCLCPP_WARN(get_logger(), "No camera handle available for camera %s", configs_[i].name.c_str());
         result.successful = false;
       }
+      break; // 找到对应相机后退出循环
     }
   }
   

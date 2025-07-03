@@ -21,7 +21,7 @@ cameras:
       offset_y: 0
 
   - name: right_camera
-    serial_number: "DA5564595"
+    serial_number: "DA2007618"
     exposure:
       auto: false
       min: 15
