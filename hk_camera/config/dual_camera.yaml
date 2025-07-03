@@ -1,0 +1,44 @@
+cameras:
+  - name: left_camera
+    serial_number: "DA2007593"
+    exposure:
+      auto: false
+      min: 15
+      max: 13319
+      mode: 0
+      value: 800
+    gain:
+      auto: false
+      min: 0.0
+      max: 22.0
+      value: 0.0
+    white_balance:
+      auto: true
+    roi:
+      width: 1624
+      height: 1240
+      offset_x: 0
+      offset_y: 0
+
+  - name: right_camera
+    serial_number: "DA5564595"
+    exposure:
+      auto: false
+      min: 15
+      max: 13319
+      mode: 0
+      value: 800
+    gain:
+      auto: false
+      min: 0.0
+      max: 22.0
+      value: 0.0
+    white_balance:
+      auto: true
+    roi:
+      width: 1624
+      height: 1240
+      offset_x: 0
+      offset_y: 0
+
+loop_rate_hz: 100 

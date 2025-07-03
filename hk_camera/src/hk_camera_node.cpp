@@ -1,11 +1,13 @@
 #include "hk_camera/hk_camera_node.hpp"
 #include <chrono>
+#include <yaml-cpp/yaml.h>
+#include <fstream>
 
 using namespace std::chrono_literals;
 
 HKCameraNode::HKCameraNode(const rclcpp::NodeOptions& options)
     : Node("hk_camera_node", options) {
-  
+  declare_parameter<std::string>("config_file", "");
   // 声明所有需要的参数
   declare_parameter<int>("loop_rate_hz", 30);
   declare_parameter<std::string>("camera_name", "cs050");
@@ -43,35 +45,51 @@ HKCameraNode::HKCameraNode(const rclcpp::NodeOptions& options)
 bool HKCameraNode::load_configs() {
   configs_.clear();
   runtime_params_.clear();
-  
-  // 从参数服务器读取相机配置
-  CameraParams cfg;
-  cfg.name = get_parameter("camera_name").as_string();
-  cfg.serial_number = get_parameter("serial_number").as_string();
-  cfg.exposure_mode = get_parameter("exposure_mode").as_int();
-  cfg.exposure_value = static_cast<float>(get_parameter("exposure_value").as_double());
-  cfg.exposure_auto = get_parameter("exposure_auto").as_bool();
-  cfg.auto_exposure_min = static_cast<int64_t>(get_parameter("exposure_min").as_int());
-  cfg.auto_exposure_max = static_cast<int64_t>(get_parameter("exposure_max").as_int());
-  cfg.gain_value = static_cast<float>(get_parameter("gain_value").as_double());
-  cfg.gain_auto = get_parameter("gain_auto").as_bool();
-  cfg.auto_gain_min = static_cast<float>(get_parameter("gain_min").as_double());
-  cfg.auto_gain_max = static_cast<float>(get_parameter("gain_max").as_double());
-  cfg.balance_white_auto = get_parameter("white_balance_auto").as_bool();
-  cfg.width = static_cast<int64_t>(get_parameter("roi_width").as_int());
-  cfg.height = static_cast<int64_t>(get_parameter("roi_height").as_int());
-  cfg.offset_x = static_cast<int64_t>(get_parameter("roi_offset_x").as_int());
-  cfg.offset_y = static_cast<int64_t>(get_parameter("roi_offset_y").as_int());
-  cfg.gamma_selector = 0;
-  cfg.gamma_value = 1.0f;
-  
-  configs_.push_back(cfg);
-  runtime_params_.push_back(cfg);
-  
-  loop_rate_hz_ = get_parameter("loop_rate_hz").as_int();
-  
-  RCLCPP_INFO(get_logger(), "Loaded camera config: %s (S/N: %s)", 
-              cfg.name.c_str(), cfg.serial_number.c_str());
+
+  // 读取参数文件路径
+  std::string config_file;
+  if (!get_parameter_or<std::string>("config_file", config_file, "")) {
+    RCLCPP_FATAL(get_logger(), "config_file parameter not set");
+    return false;
+  }
+
+  YAML::Node config = YAML::LoadFile(config_file);
+  if (!config["cameras"]) {
+    RCLCPP_FATAL(get_logger(), "No 'cameras' entry in config file");
+    return false;
+  }
+
+  for (const auto& cam : config["cameras"]) {
+    CameraParams cfg;
+    cfg.name = cam["name"].as<std::string>("");
+    cfg.serial_number = cam["serial_number"].as<std::string>("");
+    cfg.exposure_mode = cam["exposure"]["mode"].as<int>(0);
+    cfg.exposure_value = static_cast<float>(cam["exposure"]["value"].as<double>(5000.0));
+    cfg.exposure_auto = cam["exposure"]["auto"].as<bool>(true);
+    cfg.auto_exposure_min = static_cast<int64_t>(cam["exposure"]["min"].as<int>(15));
+    cfg.auto_exposure_max = static_cast<int64_t>(cam["exposure"]["max"].as<int>(13319));
+    cfg.gain_value = static_cast<float>(cam["gain"]["value"].as<double>(6.0));
+    cfg.gain_auto = cam["gain"]["auto"].as<bool>(true);
+    cfg.auto_gain_min = static_cast<float>(cam["gain"]["min"].as<double>(0.0));
+    cfg.auto_gain_max = static_cast<float>(cam["gain"]["max"].as<double>(22.0));
+    cfg.balance_white_auto = cam["white_balance"]["auto"].as<bool>(true);
+    cfg.width = static_cast<int64_t>(cam["roi"]["width"].as<int>(2448));
+    cfg.height = static_cast<int64_t>(cam["roi"]["height"].as<int>(2048));
+    cfg.offset_x = static_cast<int64_t>(cam["roi"]["offset_x"].as<int>(0));
+    cfg.offset_y = static_cast<int64_t>(cam["roi"]["offset_y"].as<int>(0));
+    cfg.gamma_selector = 0;
+    cfg.gamma_value = 1.0f;
+    configs_.push_back(cfg);
+    runtime_params_.push_back(cfg);
+    RCLCPP_INFO(get_logger(), "Loaded camera config: %s (S/N: %s)", cfg.name.c_str(), cfg.serial_number.c_str());
+  }
+
+  if (config["loop_rate_hz"]) {
+    loop_rate_hz_ = config["loop_rate_hz"].as<int>(30);
+  } else {
+    loop_rate_hz_ = 30;
+  }
+
   return !configs_.empty();
 }
 

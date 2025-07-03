@@ -11,6 +11,7 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # 添加海康SDK头文件路径
 include_directories(
@@ -27,18 +28,18 @@ file(GLOB SOURCES "src/camera_manager.cpp" "src/hk_camera_node.cpp")
 
 # Create library
 add_library(${PROJECT_NAME} ${SOURCES})
-target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} MvCameraControl)
-ament_target_dependencies(${PROJECT_NAME} rclcpp sensor_msgs cv_bridge)
+target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} MvCameraControl yaml-cpp)
+ament_target_dependencies(${PROJECT_NAME} rclcpp sensor_msgs cv_bridge yaml-cpp)
 
 # 添加test_single_camera可执行文件
 add_executable(test_single_camera test/test_single_camera.cpp)
-target_link_libraries(test_single_camera ${PROJECT_NAME} ${OpenCV_LIBS} MvCameraControl)
+target_link_libraries(test_single_camera ${PROJECT_NAME} ${OpenCV_LIBS} MvCameraControl yaml-cpp)
 install(TARGETS test_single_camera DESTINATION lib/${PROJECT_NAME})
 
 # 新增主节点可执行文件
 add_executable(hk_camera_node_main src/hk_camera_node_main.cpp)
-target_link_libraries(hk_camera_node_main ${PROJECT_NAME} ${OpenCV_LIBS} MvCameraControl)
-ament_target_dependencies(hk_camera_node_main rclcpp sensor_msgs cv_bridge)
+target_link_libraries(hk_camera_node_main ${PROJECT_NAME} ${OpenCV_LIBS} MvCameraControl yaml-cpp)
+ament_target_dependencies(hk_camera_node_main rclcpp sensor_msgs cv_bridge yaml-cpp)
 install(TARGETS hk_camera_node_main DESTINATION lib/${PROJECT_NAME})
 
 # 安装头文件和库
