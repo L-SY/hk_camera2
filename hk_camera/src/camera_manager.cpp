@@ -230,7 +230,7 @@ void CameraManager::enqueueImage(CameraContext &ctx,
   // 处理8位Bayer格式
   if (info->enPixelType == PixelType_Gvsp_BayerRG8) {
     cv::Mat bayer_img(H, W, CV_8UC1, data);
-    cv::cvtColor(bayer_img, img, cv::COLOR_BayerBG2BGR);  // 8位BayerRG也用BG模式修正颜色
+    cv::cvtColor(bayer_img, img, cv::COLOR_BayerBG2BGR);  // 正确的BayerRG8到BGR转换
   }
   else if (info->enPixelType == PixelType_Gvsp_Mono8) {
     // 单通道灰度图，直接使用

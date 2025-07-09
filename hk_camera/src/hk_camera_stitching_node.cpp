@@ -7,31 +7,34 @@
 #include <iostream>
 
 HKCameraStitchingNode::HKCameraStitchingNode(const rclcpp::NodeOptions& options)
-    : Node("hk_camera_stitching_node", options) {
+    : HKCameraNode("hk_camera_stitching_node", options) {
+  RCLCPP_INFO(get_logger(), "HKCameraStitchingNode constructor called");
+  // 基类构造函数已经调用了 initialize()，相机已经初始化好了
+  // 现在只需要初始化拼接特有的参数和发布者
+  initialize_stitching_specific();
+  RCLCPP_INFO(get_logger(), "HKCameraStitchingNode constructor completed");
+}
+
+void HKCameraStitchingNode::initialize_stitching_specific() {
+  // 基类已经初始化了相机，现在只需要初始化拼接特有的功能
   
-  // 声明参数
-  declare_parameter<std::string>("config_file", "");
+  // 声明拼接特有的参数
   declare_parameter<std::string>("homography_file", "");
   declare_parameter<bool>("enable_stitching", true);
   declare_parameter<bool>("publish_individual_images", false);
   declare_parameter<bool>("use_flat_field", false);
   declare_parameter<std::string>("flat_field_left", "");
   declare_parameter<std::string>("flat_field_right", "");
-  declare_parameter<int>("loop_rate_hz", 60);
   
   // 声明融合参数
   declare_parameter<bool>("enable_blending", true);
   declare_parameter<double>("blend_strength", 1.0);
   declare_parameter<std::string>("blend_mode", "linear");
   declare_parameter<int>("blend_feather_size", 50);
-  declare_parameter<std::string>("blend_overlap_priority", "center");
+  declare_parameter<std::string>("blend_overlap_priority", "left");
+  declare_parameter<double>("blend_priority_strength", 0.8);
   declare_parameter<double>("blend_gamma_correction", 1.0);
   declare_parameter<bool>("publish_individual_roi", false);
-  
-  if (!load_configs()) {
-    RCLCPP_FATAL(get_logger(), "Failed to load camera configs");
-    return;
-  }
   
   if (!load_homography_matrix()) {
     RCLCPP_FATAL(get_logger(), "Failed to load homography matrix");
@@ -73,8 +76,8 @@ HKCameraStitchingNode::HKCameraStitchingNode(const rclcpp::NodeOptions& options)
   blend_mode_ = get_parameter("blend_mode").as_string();
   blend_feather_size_ = get_parameter("blend_feather_size").as_int();
   blend_overlap_priority_ = get_parameter("blend_overlap_priority").as_string();
+  blend_priority_strength_ = get_parameter("blend_priority_strength").as_double();
   blend_gamma_correction_ = get_parameter("blend_gamma_correction").as_double();
-  loop_rate_hz_ = get_parameter("loop_rate_hz").as_int();
   
   RCLCPP_INFO(get_logger(), "Fusion parameters - mode: %s, strength: %.2f, feather: %d, priority: %s, gamma: %.2f", 
               blend_mode_.c_str(), blend_strength_, blend_feather_size_, blend_overlap_priority_.c_str(), blend_gamma_correction_);
@@ -106,117 +109,13 @@ HKCameraStitchingNode::HKCameraStitchingNode(const rclcpp::NodeOptions& options)
   
   RCLCPP_INFO(get_logger(), "ROI parameters initialized with percentage values");
   
-  // 为每个相机声明独立的参数
-  for (size_t i = 0; i < configs_.size(); ++i) {
-    const auto& cfg = configs_[i];
-    std::string prefix = cfg.name + ".";
-    
-    declare_parameter<bool>(prefix + "exposure_auto", cfg.exposure_auto);
-    declare_parameter<int>(prefix + "exposure_min", static_cast<int>(cfg.auto_exposure_min));
-    declare_parameter<int>(prefix + "exposure_max", static_cast<int>(cfg.auto_exposure_max));
-    declare_parameter<int>(prefix + "exposure_mode", cfg.exposure_mode);
-    declare_parameter<double>(prefix + "exposure_value", static_cast<double>(cfg.exposure_value));
-    declare_parameter<bool>(prefix + "gain_auto", cfg.gain_auto);
-    declare_parameter<double>(prefix + "gain_min", static_cast<double>(cfg.auto_gain_min));
-    declare_parameter<double>(prefix + "gain_max", static_cast<double>(cfg.auto_gain_max));
-    declare_parameter<double>(prefix + "gain_value", static_cast<double>(cfg.gain_value));
-    declare_parameter<bool>(prefix + "white_balance_auto", cfg.balance_white_auto);
-    declare_parameter<int>(prefix + "roi_width", static_cast<int>(cfg.width));
-    declare_parameter<int>(prefix + "roi_height", static_cast<int>(cfg.height));
-    declare_parameter<int>(prefix + "roi_offset_x", static_cast<int>(cfg.offset_x));
-    declare_parameter<int>(prefix + "roi_offset_y", static_cast<int>(cfg.offset_y));
-  }
-  
-  if (!cam_mgr_.init(configs_)) {
-    RCLCPP_FATAL(get_logger(), "CameraManager init failed");
-    return;
-  }
-  
-  cam_mgr_.start();
-  setup_publishers();
-  setup_dynamic_params();
-  
   RCLCPP_INFO(get_logger(), "Camera stitching node initialized successfully");
   RCLCPP_INFO(get_logger(), "Stitching enabled: %s", enable_stitching_ ? "true" : "false");
   RCLCPP_INFO(get_logger(), "Publish individual images: %s", publish_individual_images_ ? "true" : "false");
   RCLCPP_INFO(get_logger(), "Loop rate: %d Hz", loop_rate_hz_);
 }
 
-bool HKCameraStitchingNode::load_configs() {
-  configs_.clear();
-  runtime_params_.clear();
 
-  std::string config_file;
-  if (!get_parameter_or<std::string>("config_file", config_file, "")) {
-    RCLCPP_FATAL(get_logger(), "config_file parameter not set");
-    return false;
-  }
-
-  RCLCPP_INFO(get_logger(), "Raw config_file parameter: %s", config_file.c_str());
-
-  // 检查是否为空字符串
-  if (config_file.empty()) {
-    RCLCPP_FATAL(get_logger(), "config_file parameter is empty");
-    return false;
-  }
-
-  // 如果是相对路径，则相对于package的config目录
-  if (config_file.front() != '/') {
-    try {
-      std::string pkg_path = ament_index_cpp::get_package_share_directory("hk_camera");
-      config_file = pkg_path + "/config/" + config_file;
-      RCLCPP_INFO(get_logger(), "Resolved config file path: %s", config_file.c_str());
-    } catch (const std::exception& e) {
-      RCLCPP_ERROR(get_logger(), "Cannot find package path for relative config file: %s", e.what());
-      return false;
-    }
-  }
-  
-  RCLCPP_INFO(get_logger(), "Loading camera config from: %s", config_file.c_str());
-
-  YAML::Node config;
-  try {
-    config = YAML::LoadFile(config_file);
-  } catch (const std::exception& e) {
-    RCLCPP_FATAL(get_logger(), "Failed to load YAML config file: %s", e.what());
-    return false;
-  }
-  if (!config["cameras"]) {
-    RCLCPP_FATAL(get_logger(), "No 'cameras' entry in config file");
-    return false;
-  }
-
-  for (const auto& cam : config["cameras"]) {
-    CameraParams cfg;
-    cfg.name = cam["name"].as<std::string>("");
-    cfg.serial_number = cam["serial_number"].as<std::string>("");
-    cfg.exposure_mode = cam["exposure"]["mode"].as<int>(0);
-    cfg.exposure_value = static_cast<float>(cam["exposure"]["value"].as<double>(5000.0));
-    cfg.exposure_auto = cam["exposure"]["auto"].as<bool>(true);
-    cfg.auto_exposure_min = static_cast<int64_t>(cam["exposure"]["min"].as<int>(15));
-    cfg.auto_exposure_max = static_cast<int64_t>(cam["exposure"]["max"].as<int>(13319));
-    cfg.gain_value = static_cast<float>(cam["gain"]["value"].as<double>(6.0));
-    cfg.gain_auto = cam["gain"]["auto"].as<bool>(true);
-    cfg.auto_gain_min = static_cast<float>(cam["gain"]["min"].as<double>(0.0));
-    cfg.auto_gain_max = static_cast<float>(cam["gain"]["max"].as<double>(22.0));
-    cfg.balance_white_auto = cam["white_balance"]["auto"].as<bool>(true);
-    cfg.width = static_cast<int64_t>(cam["roi"]["width"].as<int>(2448));
-    cfg.height = static_cast<int64_t>(cam["roi"]["height"].as<int>(2048));
-    cfg.offset_x = static_cast<int64_t>(cam["roi"]["offset_x"].as<int>(0));
-    cfg.offset_y = static_cast<int64_t>(cam["roi"]["offset_y"].as<int>(0));
-    cfg.gamma_selector = 0;
-    cfg.gamma_value = 1.0f;
-    configs_.push_back(cfg);
-    runtime_params_.push_back(cfg);
-    RCLCPP_INFO(get_logger(), "Loaded camera config: %s (S/N: %s)", cfg.name.c_str(), cfg.serial_number.c_str());
-  }
-
-  if (config["loop_rate_hz"]) {
-    loop_rate_hz_ = config["loop_rate_hz"].as<int>(60);
-  }
-
-  return !configs_.empty();
-}
 
 bool HKCameraStitchingNode::load_homography_matrix() {
   std::string homography_file;
@@ -225,6 +124,7 @@ bool HKCameraStitchingNode::load_homography_matrix() {
     try {
       std::string pkg_path = ament_index_cpp::get_package_share_directory("hk_camera");
       homography_file = pkg_path + "/files/H_right_to_left.yaml";
+      RCLCPP_INFO(get_logger(), "Using default homography file: %s", homography_file.c_str());
     } catch (const std::exception& e) {
       RCLCPP_ERROR(get_logger(), "Cannot find package path, please specify homography_file parameter");
       return false;
@@ -234,10 +134,13 @@ bool HKCameraStitchingNode::load_homography_matrix() {
     try {
       std::string pkg_path = ament_index_cpp::get_package_share_directory("hk_camera");
       homography_file = pkg_path + "/files/" + homography_file;
+      RCLCPP_INFO(get_logger(), "Resolved homography file: %s", homography_file.c_str());
     } catch (const std::exception& e) {
       RCLCPP_ERROR(get_logger(), "Cannot find package path for relative homography file: %s", e.what());
       return false;
     }
+  } else {
+    RCLCPP_INFO(get_logger(), "Using absolute homography file: %s", homography_file.c_str());
   }
 
   try {
@@ -291,19 +194,10 @@ bool HKCameraStitchingNode::load_homography_matrix() {
 }
 
 void HKCameraStitchingNode::setup_publishers() {
-  individual_pubs_.clear();
+  // 先调用基类的 setup_publishers 来设置个人相机发布者
+  HKCameraNode::setup_publishers();
   
-  if (publish_individual_images_) {
-    for (size_t i = 0; i < configs_.size(); ++i) {
-      CameraPublisher cam_pub;
-      cam_pub.name = configs_[i].name;
-      std::string topic_name = "/" + configs_[i].name + "/image_raw";
-      cam_pub.pub = create_publisher<sensor_msgs::msg::Image>(topic_name, 10);
-      individual_pubs_.push_back(cam_pub);
-    }
-    RCLCPP_INFO(get_logger(), "Individual camera publishers created");
-  }
-  
+  // 设置拼接特有的发布者
   if (enable_stitching_) {
     stitched_pub_ = create_publisher<sensor_msgs::msg::Image>("/stitched_image", 10);
     debug_pub_ = create_publisher<sensor_msgs::msg::Image>("/debug_image", 10);
@@ -311,37 +205,21 @@ void HKCameraStitchingNode::setup_publishers() {
   }
 }
 
-void HKCameraStitchingNode::setup_dynamic_params() {
-  auto callback_handle = this->add_on_set_parameters_callback(
-    [this](const std::vector<rclcpp::Parameter>& params) {
-      return this->on_param_change(params);
-    }
-  );
-  param_callback_handle_ = callback_handle;
-  RCLCPP_INFO(get_logger(), "Dynamic parameter reconfiguration setup complete");
-}
+
 
 rcl_interfaces::msg::SetParametersResult HKCameraStitchingNode::on_param_change(const std::vector<rclcpp::Parameter>& params) {
-  rcl_interfaces::msg::SetParametersResult result;
-  result.successful = true;
+  // 先调用基类的参数处理
+  rcl_interfaces::msg::SetParametersResult result = HKCameraNode::on_param_change(params);
   
+  // 处理拼接特有的参数
   for (const auto& param : params) {
-    RCLCPP_INFO(get_logger(), "Parameter changed: %s", param.get_name().c_str());
-    
-    // 处理全局参数
-    if (param.get_name() == "loop_rate_hz") {
-      loop_rate_hz_ = param.as_int();
-      RCLCPP_INFO(get_logger(), "Updated loop_rate_hz to: %d", loop_rate_hz_);
-      continue;
-    } else if (param.get_name() == "enable_stitching") {
+    if (param.get_name() == "enable_stitching") {
       enable_stitching_ = param.as_bool();
       RCLCPP_INFO(get_logger(), "Updated enable_stitching to: %s", enable_stitching_ ? "true" : "false");
-      continue;
     } else if (param.get_name() == "publish_individual_images") {
       publish_individual_images_ = param.as_bool();
       setup_publishers();  // 重新设置发布者
       RCLCPP_INFO(get_logger(), "Updated publish_individual_images to: %s", publish_individual_images_ ? "true" : "false");
-      continue;
     } else if (param.get_name() == "left_roi_x_percent") {
       // 参数已经由ROS2自动更新，这里只需要记录日志
       RCLCPP_INFO(get_logger(), "Updated left_roi_x_percent to: %.3f", param.as_double());
@@ -403,6 +281,10 @@ rcl_interfaces::msg::SetParametersResult HKCameraStitchingNode::on_param_change(
       blend_overlap_priority_ = param.as_string();
       RCLCPP_INFO(get_logger(), "Updated blend_overlap_priority to: %s", blend_overlap_priority_.c_str());
       continue;
+    } else if (param.get_name() == "blend_priority_strength") {
+      blend_priority_strength_ = param.as_double();
+      RCLCPP_INFO(get_logger(), "Updated blend_priority_strength to: %.3f", blend_priority_strength_);
+      continue;
     } else if (param.get_name() == "blend_gamma_correction") {
       blend_gamma_correction_ = param.as_double();
       RCLCPP_INFO(get_logger(), "Updated blend_gamma_correction to: %.3f", blend_gamma_correction_);
@@ -410,63 +292,8 @@ rcl_interfaces::msg::SetParametersResult HKCameraStitchingNode::on_param_change(
     } else if (param.get_name() == "publish_individual_roi") {
       publish_individual_roi_ = param.as_bool();
       RCLCPP_INFO(get_logger(), "Updated publish_individual_roi to: %s", publish_individual_roi_ ? "true" : "false");
-      continue;
     }
-    
-    // 处理相机特定参数
-    for (size_t i = 0; i < configs_.size(); ++i) {
-      const std::string prefix = configs_[i].name + ".";
-      
-      if (param.get_name().find(prefix) != 0) continue;
-      
-      auto& cfg = runtime_params_[i];
-      std::string param_suffix = param.get_name().substr(prefix.length());
-      
-      if (param_suffix == "exposure_auto") {
-        cfg.exposure_auto = param.as_bool();
-      } else if (param_suffix == "exposure_value") {
-        cfg.exposure_value = static_cast<float>(param.as_double());
-      } else if (param_suffix == "exposure_min") {
-        cfg.auto_exposure_min = static_cast<int64_t>(param.as_int());
-      } else if (param_suffix == "exposure_max") {
-        cfg.auto_exposure_max = static_cast<int64_t>(param.as_int());
-      } else if (param_suffix == "gain_auto") {
-        cfg.gain_auto = param.as_bool();
-      } else if (param_suffix == "gain_value") {
-        cfg.gain_value = static_cast<float>(param.as_double());
-      } else if (param_suffix == "gain_min") {
-        cfg.auto_gain_min = static_cast<float>(param.as_double());
-      } else if (param_suffix == "gain_max") {
-        cfg.auto_gain_max = static_cast<float>(param.as_double());
-      } else if (param_suffix == "white_balance_auto") {
-        cfg.balance_white_auto = param.as_bool();
-      } else if (param_suffix == "roi_width") {
-        cfg.width = static_cast<int64_t>(param.as_int());
-      } else if (param_suffix == "roi_height") {
-        cfg.height = static_cast<int64_t>(param.as_int());
-      } else if (param_suffix == "roi_offset_x") {
-        cfg.offset_x = static_cast<int64_t>(param.as_int());
-      } else if (param_suffix == "roi_offset_y") {
-        cfg.offset_y = static_cast<int64_t>(param.as_int());
-      }
-      
-      void* handle = cam_mgr_.getHandle(static_cast<int>(i));
-      if (handle) {
-        int ret = cam_mgr_.setParameter(handle, cfg);
-        if (ret != 0) {
-          RCLCPP_WARN(get_logger(), "Failed to set camera %s parameter %s: 0x%X", 
-                      configs_[i].name.c_str(), param.get_name().c_str(), ret);
-          result.successful = false;
-        } else {
-          RCLCPP_INFO(get_logger(), "Successfully updated camera %s parameter: %s", 
-                      configs_[i].name.c_str(), param.get_name().c_str());
-        }
-      } else {
-        RCLCPP_WARN(get_logger(), "No camera handle available for camera %s", configs_[i].name.c_str());
-        result.successful = false;
-      }
-      break;
-    }
+    // 其他ROI相关参数处理可以在这里添加
   }
   
   return result;
@@ -687,7 +514,7 @@ void HKCameraStitchingNode::process_and_publish_images() {
   std::vector<cv::Mat> original_images = images;
   
   // 发布单独的相机图像（如果启用）- 可以选择发布原始图像或ROI裁剪后的图像
-  if (publish_individual_images_ && individual_pubs_.size() == images.size()) {
+  if (publish_individual_images_ && pubs_.size() == images.size()) {
     // 决定是否对单独发布的图像进行ROI裁剪
     std::vector<cv::Mat> publish_images = images;
     
@@ -723,7 +550,7 @@ void HKCameraStitchingNode::process_and_publish_images() {
       header.stamp = current_time;
       std::string encoding = (publish_images[i].channels() == 1) ? "mono8" : "bgr8";
       auto msg = cv_bridge::CvImage(header, encoding, publish_images[i]).toImageMsg();
-      individual_pubs_[i].pub->publish(*msg);
+      pubs_[i].pub->publish(*msg);
     }
   }
   
@@ -794,9 +621,10 @@ void HKCameraStitchingNode::process_and_publish_images() {
       cv::Mat T_right_roi = (cv::Mat_<double>(3,3) << 1, 0, right_roi.x, 0, 1, right_roi.y, 0, 0, 1);
       cv::Mat H_right_roi = H_canvas * T_right_roi;
       
-      // 变换右图并融合到画布
+      // 变换右图并融合到画布 - 使用白色背景避免黑色三角形
       cv::Mat warped_right;
-      cv::warpPerspective(img_right, warped_right, H_right_roi, canvas.size());
+      cv::warpPerspective(img_right, warped_right, H_right_roi, canvas.size(), 
+                         cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(255, 255, 255));
       
       // 创建右图掩码
       cv::Mat mask_right = cv::Mat::zeros(canvas.size(), CV_8UC1);
@@ -807,7 +635,7 @@ void HKCameraStitchingNode::process_and_publish_images() {
       cv::Mat mask_left = cv::Mat::zeros(canvas.size(), CV_8UC1);
       mask_left(left_rect_on_canvas) = 255;
       
-      // 使用高级融合算法
+      // 使用改进的融合算法，支持优先级控制
       canvas = blend_images_advanced(canvas, warped_right, mask_left, mask_right, left_rect_on_canvas);
       
       cv::Mat stitched = canvas;
@@ -876,14 +704,8 @@ void HKCameraStitchingNode::process_and_publish_images() {
 
 cv::Mat HKCameraStitchingNode::blend_images_advanced(const cv::Mat& canvas, const cv::Mat& warped_right, 
                                                    const cv::Mat& mask_left, const cv::Mat& mask_right, 
-                                                   const cv::Rect& left_rect_on_canvas) {
+                                                   const cv::Rect& /* left_rect_on_canvas */) {
   cv::Mat result = canvas.clone();
-  
-  // 如果禁用融合，直接覆盖
-  if (!enable_blending_ || blend_mode_ == "none") {
-    warped_right.copyTo(result, mask_right);
-    return result;
-  }
   
   // 应用伽马校正
   cv::Mat corrected_canvas = result;
@@ -893,89 +715,129 @@ cv::Mat HKCameraStitchingNode::blend_images_advanced(const cv::Mat& canvas, cons
     corrected_warped = apply_gamma_correction(warped_right, blend_gamma_correction_);
   }
   
-  // 找到重叠区域
+  // 找到重叠区域和非重叠区域
   cv::Mat overlap_mask;
   cv::bitwise_and(mask_left, mask_right, overlap_mask);
   
-  if (blend_mode_ == "linear") {
-    // 线性融合：50/50 权重
-    for (int y = 0; y < result.rows; ++y) {
-      for (int x = 0; x < result.cols; ++x) {
-        if (overlap_mask.at<uchar>(y, x) > 0) {
-          cv::Vec3b left_pixel = corrected_canvas.at<cv::Vec3b>(y, x);
-          cv::Vec3b right_pixel = corrected_warped.at<cv::Vec3b>(y, x);
-          result.at<cv::Vec3b>(y, x) = left_pixel * (1.0f - blend_strength_) + right_pixel * blend_strength_;
-        } else if (mask_right.at<uchar>(y, x) > 0) {
-          result.at<cv::Vec3b>(y, x) = corrected_warped.at<cv::Vec3b>(y, x);
-        }
-      }
-    }
-  } else if (blend_mode_ == "weighted") {
-    // 基于距离的加权融合
-    cv::Mat dist_left, dist_right;
-    cv::distanceTransform(255 - mask_left, dist_left, cv::DIST_L2, 3);
-    cv::distanceTransform(255 - mask_right, dist_right, cv::DIST_L2, 3);
-    
-    for (int y = 0; y < result.rows; ++y) {
-      for (int x = 0; x < result.cols; ++x) {
-        if (overlap_mask.at<uchar>(y, x) > 0) {
-          float d_left = dist_left.at<float>(y, x);
-          float d_right = dist_right.at<float>(y, x);
-          float total_dist = d_left + d_right;
-          
-          if (total_dist > 0) {
-            float weight_right = (d_left / total_dist) * blend_strength_;
-            float weight_left = 1.0f - weight_right;
-            
-            cv::Vec3b left_pixel = corrected_canvas.at<cv::Vec3b>(y, x);
-            cv::Vec3b right_pixel = corrected_warped.at<cv::Vec3b>(y, x);
-            result.at<cv::Vec3b>(y, x) = left_pixel * weight_left + right_pixel * weight_right;
-          }
-        } else if (mask_right.at<uchar>(y, x) > 0) {
-          result.at<cv::Vec3b>(y, x) = corrected_warped.at<cv::Vec3b>(y, x);
-        }
-      }
-    }
-  } else if (blend_mode_ == "feather") {
-    // 羽化融合
-    cv::Mat feather_mask_left = create_feather_mask(mask_left, blend_feather_size_);
-    cv::Mat feather_mask_right = create_feather_mask(mask_right, blend_feather_size_);
-    
-    for (int y = 0; y < result.rows; ++y) {
-      for (int x = 0; x < result.cols; ++x) {
-        if (overlap_mask.at<uchar>(y, x) > 0) {
-          float weight_left = feather_mask_left.at<float>(y, x);
-          float weight_right = feather_mask_right.at<float>(y, x);
-          float total_weight = weight_left + weight_right;
-          
-          if (total_weight > 0) {
-            weight_left /= total_weight;
-            weight_right /= total_weight;
-            weight_right *= blend_strength_;
-            weight_left = 1.0f - weight_right;
-            
-            cv::Vec3b left_pixel = corrected_canvas.at<cv::Vec3b>(y, x);
-            cv::Vec3b right_pixel = corrected_warped.at<cv::Vec3b>(y, x);
-            result.at<cv::Vec3b>(y, x) = left_pixel * weight_left + right_pixel * weight_right;
-          }
-        } else if (mask_right.at<uchar>(y, x) > 0) {
-          result.at<cv::Vec3b>(y, x) = corrected_warped.at<cv::Vec3b>(y, x);
-        }
-      }
-    }
-  }
+  // 右图非重叠区域：直接复制右图到结果
+  cv::Mat mask_right_only;
+  cv::bitwise_and(mask_right, ~mask_left, mask_right_only);
+  corrected_warped.copyTo(result, mask_right_only);
   
-  // 处理重叠优先级
-  if (blend_overlap_priority_ == "left" && cv::countNonZero(overlap_mask) > 0) {
-    // 左图优先：在重叠区域主要保留左图
-    cv::Mat priority_mask;
-    cv::erode(overlap_mask, priority_mask, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(10, 10)));
-    corrected_canvas.copyTo(result, priority_mask);
-  } else if (blend_overlap_priority_ == "right" && cv::countNonZero(overlap_mask) > 0) {
-    // 右图优先：在重叠区域主要保留右图
-    cv::Mat priority_mask;
-    cv::erode(overlap_mask, priority_mask, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(10, 10)));
-    corrected_warped.copyTo(result, priority_mask);
+  // 重叠区域处理 - 根据优先级和融合模式决定
+  if (cv::countNonZero(overlap_mask) > 0) {
+    
+    // 如果禁用融合或使用none模式，根据优先级直接覆盖
+    if (!enable_blending_ || blend_mode_ == "none") {
+      if (blend_overlap_priority_ == "left") {
+        // 左图优先：保持左图（不做任何操作，因为result已经是canvas）
+        RCLCPP_DEBUG(get_logger(), "Overlap priority: LEFT (no blending)");
+      } else {
+        // 右图优先或center：右图覆盖
+        corrected_warped.copyTo(result, overlap_mask);
+        RCLCPP_DEBUG(get_logger(), "Overlap priority: RIGHT (no blending)");
+      }
+      return result;
+    }
+    
+    // 有融合的情况下，处理重叠区域
+    if (blend_overlap_priority_ == "left") {
+      // 左图优先：在重叠区域主要保留左图，少量融合右图
+      float left_priority_strength = static_cast<float>(blend_priority_strength_);  // 左图权重可配置
+      for (int y = 0; y < result.rows; ++y) {
+        for (int x = 0; x < result.cols; ++x) {
+          if (overlap_mask.at<uchar>(y, x) > 0) {
+            cv::Vec3b left_pixel = corrected_canvas.at<cv::Vec3b>(y, x);
+            cv::Vec3b right_pixel = corrected_warped.at<cv::Vec3b>(y, x);
+            float final_left_weight = left_priority_strength + (1.0f - left_priority_strength) * (1.0f - blend_strength_);
+            float final_right_weight = 1.0f - final_left_weight;
+            result.at<cv::Vec3b>(y, x) = left_pixel * final_left_weight + right_pixel * final_right_weight;
+          }
+        }
+      }
+      RCLCPP_DEBUG(get_logger(), "Overlap priority: LEFT with blending");
+      
+    } else if (blend_overlap_priority_ == "right") {
+      // 右图优先：在重叠区域主要保留右图，少量融合左图
+      float right_priority_strength = static_cast<float>(blend_priority_strength_);  // 右图权重可配置
+      for (int y = 0; y < result.rows; ++y) {
+        for (int x = 0; x < result.cols; ++x) {
+          if (overlap_mask.at<uchar>(y, x) > 0) {
+            cv::Vec3b left_pixel = corrected_canvas.at<cv::Vec3b>(y, x);
+            cv::Vec3b right_pixel = corrected_warped.at<cv::Vec3b>(y, x);
+            float final_right_weight = right_priority_strength + (1.0f - right_priority_strength) * blend_strength_;
+            float final_left_weight = 1.0f - final_right_weight;
+            result.at<cv::Vec3b>(y, x) = left_pixel * final_left_weight + right_pixel * final_right_weight;
+          }
+        }
+      }
+      RCLCPP_DEBUG(get_logger(), "Overlap priority: RIGHT with blending");
+      
+    } else {
+      // center模式：使用标准融合算法
+      if (blend_mode_ == "linear") {
+        // 线性融合
+        for (int y = 0; y < result.rows; ++y) {
+          for (int x = 0; x < result.cols; ++x) {
+            if (overlap_mask.at<uchar>(y, x) > 0) {
+              cv::Vec3b left_pixel = corrected_canvas.at<cv::Vec3b>(y, x);
+              cv::Vec3b right_pixel = corrected_warped.at<cv::Vec3b>(y, x);
+              result.at<cv::Vec3b>(y, x) = left_pixel * (1.0f - blend_strength_) + right_pixel * blend_strength_;
+            }
+          }
+        }
+      } else if (blend_mode_ == "weighted") {
+        // 基于距离的加权融合
+        cv::Mat dist_left, dist_right;
+        cv::distanceTransform(255 - mask_left, dist_left, cv::DIST_L2, 3);
+        cv::distanceTransform(255 - mask_right, dist_right, cv::DIST_L2, 3);
+        
+        for (int y = 0; y < result.rows; ++y) {
+          for (int x = 0; x < result.cols; ++x) {
+            if (overlap_mask.at<uchar>(y, x) > 0) {
+              float d_left = dist_left.at<float>(y, x);
+              float d_right = dist_right.at<float>(y, x);
+              float total_dist = d_left + d_right;
+              
+              if (total_dist > 0) {
+                float weight_right = (d_left / total_dist) * blend_strength_;
+                float weight_left = 1.0f - weight_right;
+                
+                cv::Vec3b left_pixel = corrected_canvas.at<cv::Vec3b>(y, x);
+                cv::Vec3b right_pixel = corrected_warped.at<cv::Vec3b>(y, x);
+                result.at<cv::Vec3b>(y, x) = left_pixel * weight_left + right_pixel * weight_right;
+              }
+            }
+          }
+        }
+      } else if (blend_mode_ == "feather") {
+        // 羽化融合
+        cv::Mat feather_mask_left = create_feather_mask(mask_left, blend_feather_size_);
+        cv::Mat feather_mask_right = create_feather_mask(mask_right, blend_feather_size_);
+        
+        for (int y = 0; y < result.rows; ++y) {
+          for (int x = 0; x < result.cols; ++x) {
+            if (overlap_mask.at<uchar>(y, x) > 0) {
+              float weight_left = feather_mask_left.at<float>(y, x);
+              float weight_right = feather_mask_right.at<float>(y, x);
+              float total_weight = weight_left + weight_right;
+              
+              if (total_weight > 0) {
+                weight_left /= total_weight;
+                weight_right /= total_weight;
+                weight_right *= blend_strength_;
+                weight_left = 1.0f - weight_right;
+                
+                cv::Vec3b left_pixel = corrected_canvas.at<cv::Vec3b>(y, x);
+                cv::Vec3b right_pixel = corrected_warped.at<cv::Vec3b>(y, x);
+                result.at<cv::Vec3b>(y, x) = left_pixel * weight_left + right_pixel * weight_right;
+              }
+            }
+          }
+        }
+      }
+      RCLCPP_DEBUG(get_logger(), "Overlap priority: CENTER with %s blending", blend_mode_.c_str());
+    }
   }
   
   return result;

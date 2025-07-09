@@ -14,18 +14,24 @@ class HKCameraNode : public rclcpp::Node {
 public:
   explicit HKCameraNode(
       const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
-  void spin();
+  
+  // 构造函数重载，允许子类指定节点名称
+  explicit HKCameraNode(const std::string& node_name,
+      const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
+  
+  virtual void spin();
 
-private:
+protected:
   struct CameraPublisher {
     std::string name;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub;
   };
 
-  bool load_configs();
-  void setup_publishers();
-  void setup_dynamic_params();
-  rcl_interfaces::msg::SetParametersResult
+  virtual void initialize();
+  virtual bool load_configs();
+  virtual void setup_publishers();
+  virtual void setup_dynamic_params();
+  virtual rcl_interfaces::msg::SetParametersResult
   on_param_change(const std::vector<rclcpp::Parameter> &params);
 
   std::vector<CameraParams> configs_;

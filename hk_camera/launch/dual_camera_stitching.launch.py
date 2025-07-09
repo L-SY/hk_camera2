@@ -13,12 +13,6 @@ def generate_launch_description():
         'dual_camera_stitching.yaml'
     )
     
-    homography_path = os.path.join(
-        hk_camera_share_dir,
-        'files',
-        'H_right_to_left.yaml'
-    )
-    
     return LaunchDescription([
         Node(
             package='hk_camera',

@@ -37,8 +37,8 @@ ament_target_dependencies(${PROJECT_NAME} rclcpp sensor_msgs cv_bridge yaml-cpp 
 # target_link_libraries(test_single_camera ${PROJECT_NAME} ${OpenCV_LIBS} MvCameraControl yaml-cpp)
 # install(TARGETS test_single_camera DESTINATION lib/${PROJECT_NAME})
 
-# 新增主节点可执行文件（main函数已合并到hk_camera_node.cpp中）
-add_executable(hk_camera_node_main src/hk_camera_node.cpp)
+# 新增主节点可执行文件（使用单独的main文件）
+add_executable(hk_camera_node_main src/hk_camera_node_main.cpp)
 target_link_libraries(hk_camera_node_main ${PROJECT_NAME} ${OpenCV_LIBS} MvCameraControl yaml-cpp)
 ament_target_dependencies(hk_camera_node_main rclcpp sensor_msgs cv_bridge yaml-cpp)
 install(TARGETS hk_camera_node_main DESTINATION lib/${PROJECT_NAME})

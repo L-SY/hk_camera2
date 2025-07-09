@@ -2,12 +2,25 @@
 #include <chrono>
 #include <yaml-cpp/yaml.h>
 #include <fstream>
+#include <ament_index_cpp/get_package_share_directory.hpp>
 
 using namespace std::chrono_literals;
 
 HKCameraNode::HKCameraNode(const rclcpp::NodeOptions& options)
     : Node("hk_camera_node", options) {
-  declare_parameter<std::string>("config_file", "");
+  initialize();
+}
+
+HKCameraNode::HKCameraNode(const std::string& node_name, const rclcpp::NodeOptions& options)
+    : Node(node_name, options) {
+  initialize();
+}
+
+void HKCameraNode::initialize() {
+  // 只在参数未声明时声明
+  if (!has_parameter("config_file")) {
+    declare_parameter<std::string>("config_file", "");
+  }
   
   if (!load_configs()) {
     RCLCPP_FATAL(get_logger(), "Failed to load camera configs");
@@ -15,28 +28,60 @@ HKCameraNode::HKCameraNode(const rclcpp::NodeOptions& options)
   }
   
   // 声明全局参数
-  declare_parameter<int>("loop_rate_hz", 30);
+  if (!has_parameter("loop_rate_hz")) {
+    declare_parameter<int>("loop_rate_hz", 30);
+  }
   
   // 为每个相机声明独立的参数
   for (size_t i = 0; i < configs_.size(); ++i) {
     const auto& cfg = configs_[i];
     std::string prefix = cfg.name + ".";
     
-    declare_parameter<bool>(prefix + "exposure_auto", cfg.exposure_auto);
-    declare_parameter<int>(prefix + "exposure_min", static_cast<int>(cfg.auto_exposure_min));
-    declare_parameter<int>(prefix + "exposure_max", static_cast<int>(cfg.auto_exposure_max));
-    declare_parameter<int>(prefix + "exposure_mode", cfg.exposure_mode);
-    declare_parameter<double>(prefix + "exposure_value", static_cast<double>(cfg.exposure_value));
-    declare_parameter<bool>(prefix + "gain_auto", cfg.gain_auto);
-    declare_parameter<double>(prefix + "gain_min", static_cast<double>(cfg.auto_gain_min));
-    declare_parameter<double>(prefix + "gain_max", static_cast<double>(cfg.auto_gain_max));
-    declare_parameter<double>(prefix + "gain_value", static_cast<double>(cfg.gain_value));
-    declare_parameter<bool>(prefix + "white_balance_auto", cfg.balance_white_auto);
-    declare_parameter<int>(prefix + "roi_width", static_cast<int>(cfg.width));
-    declare_parameter<int>(prefix + "roi_height", static_cast<int>(cfg.height));
-    declare_parameter<int>(prefix + "roi_offset_x", static_cast<int>(cfg.offset_x));
-    declare_parameter<int>(prefix + "roi_offset_y", static_cast<int>(cfg.offset_y));
-    declare_parameter<double>(prefix + "frame_rate", cfg.frame_rate);
+    if (!has_parameter(prefix + "exposure_auto")) {
+      declare_parameter<bool>(prefix + "exposure_auto", cfg.exposure_auto);
+    }
+    if (!has_parameter(prefix + "exposure_min")) {
+      declare_parameter<int>(prefix + "exposure_min", static_cast<int>(cfg.auto_exposure_min));
+    }
+    if (!has_parameter(prefix + "exposure_max")) {
+      declare_parameter<int>(prefix + "exposure_max", static_cast<int>(cfg.auto_exposure_max));
+    }
+    if (!has_parameter(prefix + "exposure_mode")) {
+      declare_parameter<int>(prefix + "exposure_mode", cfg.exposure_mode);
+    }
+    if (!has_parameter(prefix + "exposure_value")) {
+      declare_parameter<double>(prefix + "exposure_value", static_cast<double>(cfg.exposure_value));
+    }
+    if (!has_parameter(prefix + "gain_auto")) {
+      declare_parameter<bool>(prefix + "gain_auto", cfg.gain_auto);
+    }
+    if (!has_parameter(prefix + "gain_min")) {
+      declare_parameter<double>(prefix + "gain_min", static_cast<double>(cfg.auto_gain_min));
+    }
+    if (!has_parameter(prefix + "gain_max")) {
+      declare_parameter<double>(prefix + "gain_max", static_cast<double>(cfg.auto_gain_max));
+    }
+    if (!has_parameter(prefix + "gain_value")) {
+      declare_parameter<double>(prefix + "gain_value", static_cast<double>(cfg.gain_value));
+    }
+    if (!has_parameter(prefix + "white_balance_auto")) {
+      declare_parameter<bool>(prefix + "white_balance_auto", cfg.balance_white_auto);
+    }
+    if (!has_parameter(prefix + "roi_width")) {
+      declare_parameter<int>(prefix + "roi_width", static_cast<int>(cfg.width));
+    }
+    if (!has_parameter(prefix + "roi_height")) {
+      declare_parameter<int>(prefix + "roi_height", static_cast<int>(cfg.height));
+    }
+    if (!has_parameter(prefix + "roi_offset_x")) {
+      declare_parameter<int>(prefix + "roi_offset_x", static_cast<int>(cfg.offset_x));
+    }
+    if (!has_parameter(prefix + "roi_offset_y")) {
+      declare_parameter<int>(prefix + "roi_offset_y", static_cast<int>(cfg.offset_y));
+    }
+    if (!has_parameter(prefix + "frame_rate")) {
+      declare_parameter<double>(prefix + "frame_rate", cfg.frame_rate);
+    }
   }
   
   if (!cam_mgr_.init(configs_)) {
@@ -58,6 +103,18 @@ bool HKCameraNode::load_configs() {
   if (!get_parameter_or<std::string>("config_file", config_file, "")) {
     RCLCPP_FATAL(get_logger(), "config_file parameter not set");
     return false;
+  }
+
+  // 如果是相对路径，则相对于package的config目录
+  if (config_file.front() != '/') {
+    try {
+      std::string pkg_path = ament_index_cpp::get_package_share_directory("hk_camera");
+      config_file = pkg_path + "/config/" + config_file;
+      RCLCPP_INFO(get_logger(), "Resolved config file path: %s", config_file.c_str());
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(get_logger(), "Cannot find package path for relative config file: %s", e.what());
+      return false;
+    }
   }
 
   YAML::Node config = YAML::LoadFile(config_file);
@@ -295,10 +352,4 @@ void HKCameraNode::spin() {
   }
 } 
 
-int main(int argc, char** argv) {
-  rclcpp::init(argc, argv);
-  auto node = std::make_shared<HKCameraNode>();
-  node->spin();
-  rclcpp::shutdown();
-  return 0;
-} 
+ 
