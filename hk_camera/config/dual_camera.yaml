@@ -41,4 +41,4 @@ cameras:
       offset_x: 0
       offset_y: 0
 
-loop_rate_hz: 100 
+loop_rate_hz: 60 

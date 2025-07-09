@@ -1,0 +1,40 @@
+hk_camera_stitching_node:
+  ros__parameters:
+    # 基本设置 - 使用package相对路径
+    config_file: "dual_camera.yaml"
+    homography_file: "H_right_to_left.yaml"
+    enable_stitching: true
+    publish_individual_images: true
+    loop_rate_hz: 60
+    
+    # 平场校正设置
+    use_flat_field: false
+    flat_field_left: ""
+    flat_field_right: ""
+    
+    # 拼接和融合设置
+    enable_blending: true           # 启用重叠区域融合
+    blend_strength: 1.0            # 融合强度 (0.0-1.0)
+    blend_mode: "linear"           # 融合模式: "none", "linear", "weighted", "feather"
+    blend_feather_size: 50         # 羽化边缘大小（像素）
+    blend_overlap_priority: "left" # 重叠区域优先级: "left", "right", "center"
+    blend_gamma_correction: 1.0    # 伽马校正系数 (0.5-2.0)
+    
+    # 拼接后ROI参数（百分比形式，0.0-1.0）
+    # 用于从拼接后的大图中裁剪出感兴趣区域
+    stitched_roi_x_percent: 0.0      # 拼接图X起始位置百分比
+    stitched_roi_y_percent: 0.0      # 拼接图Y起始位置百分比
+    stitched_roi_width_percent: 1.0  # 拼接图宽度百分比
+    stitched_roi_height_percent: 1.0 # 拼接图高度百分比
+    
+    # 单独发布的相机图像ROI设置（可选）
+    # 注意：这些ROI不影响拼接算法，只影响单独发布的图像
+    publish_individual_roi: false   # 是否对单独发布的图像进行ROI裁剪
+    left_roi_x_percent: 0.0         # 左相机X起始位置百分比
+    left_roi_y_percent: 0.0         # 左相机Y起始位置百分比
+    left_roi_width_percent: 1.0     # 左相机宽度百分比
+    left_roi_height_percent: 1.0    # 左相机高度百分比
+    right_roi_x_percent: 0.0        # 右相机X起始位置百分比
+    right_roi_y_percent: 0.0        # 右相机Y起始位置百分比
+    right_roi_width_percent: 1.0    # 右相机宽度百分比
+    right_roi_height_percent: 1.0   # 右相机高度百分比 

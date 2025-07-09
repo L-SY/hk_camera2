@@ -197,21 +197,76 @@ rcl_interfaces::msg::SetParametersResult HKCameraNode::on_param_change(const std
 
 void HKCameraNode::spin() {
   rclcpp::Rate rate(loop_rate_hz_);
+  
+  // Performance monitoring variables
+  int frame_count = 0;
+  int publish_count = 0;
+  auto start_time = std::chrono::steady_clock::now();
+  auto last_report = start_time;
+  
+  std::cout << "[INFO] Starting camera node with loop rate: " << loop_rate_hz_ << " Hz" << std::endl;
+  
   while (rclcpp::ok()) {
+    auto loop_start = std::chrono::high_resolution_clock::now();
+    
     for (size_t i = 0; i < static_cast<size_t>(cam_mgr_.numCameras()); ++i) {
       cv::Mat img;
       if (!cam_mgr_.getImage(static_cast<int>(i), img)) continue;
       if (img.empty()) continue;
       
+      auto convert_start = std::chrono::high_resolution_clock::now();
+      
+      frame_count++;
       std_msgs::msg::Header header;
       header.stamp = this->now();
       std::string encoding = (img.channels() == 1) ? "mono8" : "bgr8";
       
       auto msg = cv_bridge::CvImage(header, encoding, img).toImageMsg();
+      
+      auto convert_end = std::chrono::high_resolution_clock::now();
+      auto publish_start = std::chrono::high_resolution_clock::now();
+      
       pubs_[i].pub->publish(*msg);
+      publish_count++;
+      
+      auto publish_end = std::chrono::high_resolution_clock::now();
+      
+      // Log timing occasionally
+      if (publish_count % 50 == 0) {
+        auto convert_time = std::chrono::duration_cast<std::chrono::microseconds>(convert_end - convert_start);
+        auto publish_time = std::chrono::duration_cast<std::chrono::microseconds>(publish_end - publish_start);
+        std::cout << "[TIMING] Convert: " << convert_time.count() << "μs, Publish: " << publish_time.count() << "μs" << std::endl;
+      }
+    }
+    
+    // Performance reporting every 5 seconds
+    auto now = std::chrono::steady_clock::now();
+    auto report_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_report).count();
+    
+    if (report_elapsed >= 5000) {
+      double total_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count() / 1000.0;
+      double frame_fps = frame_count / total_elapsed;
+      double publish_fps = publish_count / total_elapsed;
+      
+      std::cout << "=== ROS NODE PERFORMANCE ===" << std::endl;
+      std::cout << "Frame get FPS: " << frame_fps << std::endl;
+      std::cout << "Publish FPS: " << publish_fps << std::endl;
+      std::cout << "Loop rate setting: " << loop_rate_hz_ << " Hz" << std::endl;
+      std::cout << "===========================" << std::endl;
+      
+      last_report = now;
     }
     
     rclcpp::spin_some(shared_from_this());
+    
+    auto loop_end = std::chrono::high_resolution_clock::now();
+    auto loop_time = std::chrono::duration_cast<std::chrono::microseconds>(loop_end - loop_start);
+    
+    // Log long loops
+    if (loop_time.count() > 50000) {  // > 50ms
+      std::cout << "[WARN] Long loop time: " << loop_time.count() << "μs" << std::endl;
+    }
+    
     rate.sleep();
   }
 } 

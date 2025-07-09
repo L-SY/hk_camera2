@@ -1,6 +1,12 @@
 #include "hk_camera/camera_manager.h"
 #include <cstring>
 #include <iostream>
+#include <chrono>
+#include <atomic>
+
+// Global counters for performance analysis
+static std::atomic<int> g_callback_count{0};
+static std::chrono::steady_clock::time_point g_start_time = std::chrono::steady_clock::now();
 
 CameraManager::CameraManager() {}
 
@@ -77,6 +83,9 @@ bool CameraManager::doInit(const std::vector<CameraParams> &configs) {
   }
 
   std::cout << "Total initialized cameras: " << cameras_.size() << std::endl;
+  // Reset callback statistics
+  g_callback_count = 0;
+  g_start_time = std::chrono::steady_clock::now();
   return !cameras_.empty();
 }
 
@@ -92,12 +101,14 @@ bool CameraManager::createHandle(const MV_CC_DEVICE_INFO *info,
     return false;
   }
 
-  // MV_CC_SetEnumValue(ctx.handle, "TriggerMode", 1);
-  // MV_CC_SetEnumValue(ctx.handle, "TriggerSource", MV_TRIGGER_SOURCE_SOFTWARE);
-  // MV_CC_SetBoolValue(ctx.handle, "AcquisitionFrameRateEnable", false);
-
-  MV_CC_SetEnumValue(ctx.handle, "TriggerMode", 0);
-  MV_CC_SetBoolValue(ctx.handle, "AcquisitionFrameRateEnable", false);
+  if (cameras_.size() >= 2) {
+    MV_CC_SetEnumValue(ctx.handle, "TriggerMode", 1);
+    MV_CC_SetEnumValue(ctx.handle, "TriggerSource", MV_TRIGGER_SOURCE_SOFTWARE);
+    MV_CC_SetBoolValue(ctx.handle, "AcquisitionFrameRateEnable", false);
+  } else {
+    MV_CC_SetEnumValue(ctx.handle, "TriggerMode", 0);
+    MV_CC_SetBoolValue(ctx.handle, "AcquisitionFrameRateEnable", true);
+  }
 
   MV_CC_RegisterImageCallBackEx(ctx.handle, imageCallback, &ctx);
   ctx.running = true;
@@ -118,12 +129,26 @@ bool CameraManager::start() {
   }
 
   running_ = true;
-  trigger_thread_ = std::thread([this]() {
-    while (running_) {
-      triggerAll();
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-  });
+  
+  // Optimization: Increase trigger frequency for software trigger mode
+  if (cameras_.size() >= 2) {
+    trigger_thread_ = std::thread([this]() {
+      while (running_) {
+        triggerAll();
+        // Reduced trigger interval for higher FPS (120Hz trigger rate)
+        std::this_thread::sleep_for(std::chrono::microseconds(8333));
+      }
+    });
+    std::cout << "[SYNC] Using high-frequency software trigger (120Hz)" << std::endl;
+  } else {
+    // For single camera, still use trigger for consistency
+    trigger_thread_ = std::thread([this]() {
+      while (running_) {
+        triggerAll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+    });
+  }
   return true;
 }
 
@@ -163,6 +188,23 @@ void __stdcall CameraManager::imageCallback(unsigned char *pData,
                                             void *pUser) {
   if (!pData || !pFrameInfo || !pUser)
     return;
+
+  // Performance tracking
+  g_callback_count++;
+  static int last_count = 0;
+  static auto last_time = std::chrono::steady_clock::now();
+  
+  auto now = std::chrono::steady_clock::now();
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_time).count();
+  
+  if (elapsed >= 5000) {  // Report every 5 seconds
+    int current_count = g_callback_count.load();
+    double fps = (current_count - last_count) * 1000.0 / elapsed;
+    std::cout << "[CALLBACK] FPS: " << fps << " (total: " << current_count << ")" << std::endl;
+    last_count = current_count;
+    last_time = now;
+  }
+
   CameraContext *ctx = static_cast<CameraContext *>(pUser);
   enqueueImage(*ctx, pData, pFrameInfo);
 }
@@ -170,6 +212,8 @@ void __stdcall CameraManager::imageCallback(unsigned char *pData,
 void CameraManager::enqueueImage(CameraContext &ctx,
                                  unsigned char *data,
                                  MV_FRAME_OUT_INFO_EX *info) {
+  auto start_time = std::chrono::high_resolution_clock::now();
+  
   int W = info->nWidth;
   int H = info->nHeight;
   int L = info->nFrameLen;
@@ -203,12 +247,10 @@ void CameraManager::enqueueImage(CameraContext &ctx,
     int ret = MV_CC_ConvertPixelTypeEx(ctx.handle, &conv);
     if (ret == MV_OK) {
       img = cv::Mat(H, W, CV_8UC3, ctx.cvt_buf.data()).clone();
-      std::cout << "[DEBUG] SDK BGR conversion successful" << std::endl;
     } else {
       std::cerr << "[WARN] SDK conversion failed: 0x" << std::hex << ret << std::dec << std::endl;
       // 最后的降级方案：直接作为灰度图使用
       img = cv::Mat(H, W, CV_8UC1, data).clone();
-      std::cout << "[DEBUG] Using raw data as Mono8 fallback" << std::endl;
     }
   }
 
@@ -217,8 +259,32 @@ void CameraManager::enqueueImage(CameraContext &ctx,
     return;
   }
 
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+  
+  // Log processing time occasionally
+  static int process_count = 0;
+  process_count++;
+  if (process_count % 100 == 0) {
+    std::cout << "[PROCESS] Image processing took: " << duration.count() << " μs" << std::endl;
+  }
+
   std::lock_guard<std::mutex> lock(ctx.mtx);
+  
+  // Optimization: Prevent queue overflow that can cause memory issues and latency
+  while (ctx.image_queue.size() >= 5) {  // Limit queue size to 5
+    ctx.image_queue.pop();  // Drop oldest frame
+  }
+  
   ctx.image_queue.push(img.clone());
+  
+  // Warn if queue is getting large
+  if (ctx.image_queue.size() > 3) {
+    static int warn_count = 0;
+    if (++warn_count % 100 == 0) {  // Reduce log spam
+      std::cout << "[WARN] Image queue size: " << ctx.image_queue.size() << std::endl;
+    }
+  }
 }
 
 void *CameraManager::getHandle(size_t index) const {

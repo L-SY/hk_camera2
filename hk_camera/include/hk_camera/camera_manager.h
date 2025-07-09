@@ -55,6 +55,7 @@ public:
   int numCameras();
   void *getHandle(size_t index) const;
   int setParameter(void *dev_handle_, CameraParams &config);
+  void adaptTriggerFrequency();
 
 private:
   struct CameraContext {
