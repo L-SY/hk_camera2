@@ -36,6 +36,7 @@ HKCameraNode::HKCameraNode(const rclcpp::NodeOptions& options)
     declare_parameter<int>(prefix + "roi_height", static_cast<int>(cfg.height));
     declare_parameter<int>(prefix + "roi_offset_x", static_cast<int>(cfg.offset_x));
     declare_parameter<int>(prefix + "roi_offset_y", static_cast<int>(cfg.offset_y));
+    declare_parameter<double>(prefix + "frame_rate", cfg.frame_rate);
   }
   
   if (!cam_mgr_.init(configs_)) {
@@ -85,6 +86,7 @@ bool HKCameraNode::load_configs() {
     cfg.offset_y = static_cast<int64_t>(cam["roi"]["offset_y"].as<int>(0));
     cfg.gamma_selector = 0;
     cfg.gamma_value = 1.0f;
+    cfg.frame_rate = cam["frame_rate"].as<double>(30.0);
     configs_.push_back(cfg);
     runtime_params_.push_back(cfg);
     RCLCPP_INFO(get_logger(), "Loaded camera config: %s (S/N: %s)", cfg.name.c_str(), cfg.serial_number.c_str());
@@ -170,6 +172,8 @@ rcl_interfaces::msg::SetParametersResult HKCameraNode::on_param_change(const std
         cfg.offset_x = static_cast<int64_t>(param.as_int());
       } else if (param_suffix == "roi_offset_y") {
         cfg.offset_y = static_cast<int64_t>(param.as_int());
+      } else if (param_suffix == "frame_rate") {
+        cfg.frame_rate = param.as_double();
       }
       
       // 将更新的参数应用到对应相机
@@ -209,19 +213,39 @@ void HKCameraNode::spin() {
   while (rclcpp::ok()) {
     auto loop_start = std::chrono::high_resolution_clock::now();
     
-    for (size_t i = 0; i < static_cast<size_t>(cam_mgr_.numCameras()); ++i) {
-      cv::Mat img;
-      if (!cam_mgr_.getImage(static_cast<int>(i), img)) continue;
-      if (img.empty()) continue;
+    // Use synchronized image acquisition for multiple cameras
+    std::vector<cv::Mat> images;
+    if (cam_mgr_.numCameras() > 1) {
+      // Multi-camera synchronized acquisition
+      if (!cam_mgr_.getSyncedImages(images)) {
+        rclcpp::spin_some(shared_from_this());
+        rate.sleep();
+        continue;
+      }
+    } else {
+      // Single camera acquisition
+      images.resize(1);
+      if (!cam_mgr_.getImage(0, images[0]) || images[0].empty()) {
+        rclcpp::spin_some(shared_from_this());
+        rate.sleep();
+        continue;
+      }
+    }
+    
+    // Publish all images with the same timestamp for synchronization
+    auto timestamp = this->now();
+    
+    for (size_t i = 0; i < images.size(); ++i) {
+      if (images[i].empty()) continue;
       
       auto convert_start = std::chrono::high_resolution_clock::now();
       
       frame_count++;
       std_msgs::msg::Header header;
-      header.stamp = this->now();
-      std::string encoding = (img.channels() == 1) ? "mono8" : "bgr8";
+      header.stamp = timestamp;  // Use same timestamp for all cameras
+      std::string encoding = (images[i].channels() == 1) ? "mono8" : "bgr8";
       
-      auto msg = cv_bridge::CvImage(header, encoding, img).toImageMsg();
+      auto msg = cv_bridge::CvImage(header, encoding, images[i]).toImageMsg();
       
       auto convert_end = std::chrono::high_resolution_clock::now();
       auto publish_start = std::chrono::high_resolution_clock::now();
@@ -269,4 +293,12 @@ void HKCameraNode::spin() {
     
     rate.sleep();
   }
+} 
+
+int main(int argc, char** argv) {
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<HKCameraNode>();
+  node->spin();
+  rclcpp::shutdown();
+  return 0;
 } 

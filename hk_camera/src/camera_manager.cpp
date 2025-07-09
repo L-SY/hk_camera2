@@ -130,22 +130,26 @@ bool CameraManager::start() {
 
   running_ = true;
   
-  // Optimization: Increase trigger frequency for software trigger mode
+  // Use average frame rate from camera configs for trigger frequency
+  double avg_frame_rate = getAverageFrameRate();
+  int trigger_interval_us = static_cast<int>(1000000.0 / avg_frame_rate);
+  
+  std::cout << "[SYNC] Using frame rate: " << avg_frame_rate << " Hz (interval: " << trigger_interval_us << " μs)" << std::endl;
+  
   if (cameras_.size() >= 2) {
-    trigger_thread_ = std::thread([this]() {
+    trigger_thread_ = std::thread([this, trigger_interval_us]() {
       while (running_) {
         triggerAll();
-        // Reduced trigger interval for higher FPS (120Hz trigger rate)
-        std::this_thread::sleep_for(std::chrono::microseconds(8333));
+        std::this_thread::sleep_for(std::chrono::microseconds(trigger_interval_us));
       }
     });
-    std::cout << "[SYNC] Using high-frequency software trigger (120Hz)" << std::endl;
+    std::cout << "[SYNC] Using synchronized software trigger" << std::endl;
   } else {
     // For single camera, still use trigger for consistency
-    trigger_thread_ = std::thread([this]() {
+    trigger_thread_ = std::thread([this, trigger_interval_us]() {
       while (running_) {
         triggerAll();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::microseconds(trigger_interval_us));
       }
     });
   }
@@ -189,6 +193,11 @@ void __stdcall CameraManager::imageCallback(unsigned char *pData,
   if (!pData || !pFrameInfo || !pUser)
     return;
 
+  CameraContext *ctx = static_cast<CameraContext *>(pUser);
+  
+  // Increment frame counter for synchronization
+  ctx->frame_counter.fetch_add(1);
+  
   // Performance tracking
   g_callback_count++;
   static int last_count = 0;
@@ -205,7 +214,6 @@ void __stdcall CameraManager::imageCallback(unsigned char *pData,
     last_time = now;
   }
 
-  CameraContext *ctx = static_cast<CameraContext *>(pUser);
   enqueueImage(*ctx, pData, pFrameInfo);
 }
 
@@ -285,6 +293,93 @@ void CameraManager::enqueueImage(CameraContext &ctx,
       std::cout << "[WARN] Image queue size: " << ctx.image_queue.size() << std::endl;
     }
   }
+}
+
+bool CameraManager::getSyncedImages(std::vector<cv::Mat> &images) {
+  if (cameras_.size() <= 1) {
+    // For single camera, just get the image normally
+    images.resize(1);
+    return getImage(0, images[0]);
+  }
+  
+  // For multiple cameras, wait for frame synchronization
+  uint64_t target_frame = sync_frame_counter_.load() + 1;
+  
+  // Wait for all cameras to reach the target frame
+  if (!waitForFrameSync(target_frame)) {
+    return false;
+  }
+  
+  // All cameras have reached the target frame, get images
+  images.resize(cameras_.size());
+  bool success = true;
+  
+  for (size_t i = 0; i < cameras_.size(); ++i) {
+    std::lock_guard<std::mutex> lock(cameras_[i].mtx);
+    if (cameras_[i].image_queue.empty()) {
+      success = false;
+      break;
+    }
+    images[i] = cameras_[i].image_queue.front();
+    cameras_[i].image_queue.pop();
+  }
+  
+  if (success) {
+    sync_frame_counter_.store(target_frame);
+    
+    // Log sync status occasionally
+    static int sync_count = 0;
+    if (++sync_count % 100 == 0) {
+      std::cout << "[SYNC] Successfully synchronized frame " << target_frame << std::endl;
+    }
+  }
+  
+  return success;
+}
+
+bool CameraManager::waitForFrameSync(uint64_t target_frame) {
+  const int max_wait_ms = 100;  // Maximum wait time
+  const int check_interval_us = 1000;  // Check every 1ms
+  int total_wait_us = 0;
+  
+  while (total_wait_us < max_wait_ms * 1000) {
+    bool all_ready = true;
+    
+    for (const auto& cam : cameras_) {
+      if (cam.frame_counter.load() < target_frame) {
+        all_ready = false;
+        break;
+      }
+    }
+    
+    if (all_ready) {
+      return true;
+    }
+    
+    std::this_thread::sleep_for(std::chrono::microseconds(check_interval_us));
+    total_wait_us += check_interval_us;
+  }
+  
+  // Log sync failure
+  std::cout << "[SYNC] Frame sync timeout for frame " << target_frame << std::endl;
+  for (size_t i = 0; i < cameras_.size(); ++i) {
+    std::cout << "  Camera " << i << " frame: " << cameras_[i].frame_counter.load() << std::endl;
+  }
+  
+  return false;
+}
+
+double CameraManager::getAverageFrameRate() const {
+  if (cameras_.empty()) {
+    return 30.0;  // Default fallback
+  }
+  
+  double total_fps = 0.0;
+  for (const auto& cam : cameras_) {
+    total_fps += cam.params.frame_rate;
+  }
+  
+  return total_fps / cameras_.size();
 }
 
 void *CameraManager::getHandle(size_t index) const {

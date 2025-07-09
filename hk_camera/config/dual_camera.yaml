@@ -19,6 +19,7 @@ cameras:
       height: 1240
       offset_x: 0
       offset_y: 0
+    frame_rate: 90.0
 
   - name: right_camera
     serial_number: "DA2007618"
@@ -40,5 +41,6 @@ cameras:
       height: 1240
       offset_x: 0
       offset_y: 0
+    frame_rate: 90.0
 
-loop_rate_hz: 60 
+loop_rate_hz: 90 

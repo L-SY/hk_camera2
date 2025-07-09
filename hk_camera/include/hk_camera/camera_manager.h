@@ -39,6 +39,9 @@ struct CameraParams {
 
   // Color
   int balance_white_auto;
+  
+  // Frame rate for trigger control
+  double frame_rate = 90.0;
 };
 
 class CameraManager {
@@ -52,6 +55,7 @@ public:
   void stop();
   void triggerAll();
   bool getImage(int idx, cv::Mat &image);
+  bool getSyncedImages(std::vector<cv::Mat> &images);
   int numCameras();
   void *getHandle(size_t index) const;
   int setParameter(void *dev_handle_, CameraParams &config);
@@ -66,6 +70,8 @@ private:
     std::string serial_number;
     CameraParams params;
     std::vector<uint8_t> cvt_buf;
+    std::atomic<uint64_t> frame_counter{0};  // Frame counter for synchronization
+    
     CameraContext() = default;
     CameraContext(const CameraContext &) = delete;
     CameraContext &operator=(const CameraContext &) = delete;
@@ -74,6 +80,7 @@ private:
       handle = other.handle;
       image_queue = std::move(other.image_queue);
       running.store(other.running.load());
+      frame_counter.store(other.frame_counter.load());
     }
 
     CameraContext &operator=(CameraContext &&other) noexcept {
@@ -81,6 +88,7 @@ private:
         handle = other.handle;
         image_queue = std::move(other.image_queue);
         running.store(other.running.load());
+        frame_counter.store(other.frame_counter.load());
       }
       return *this;
     }
@@ -91,6 +99,7 @@ private:
   std::vector<CameraContext> cameras_;
   std::thread trigger_thread_;
   std::atomic<bool> running_{false};
+  std::atomic<uint64_t> sync_frame_counter_{0};  // Global sync counter
 
   static void __stdcall imageCallback(unsigned char *pData,
                                       MV_FRAME_OUT_INFO_EX *pFrameInfo,
@@ -99,6 +108,7 @@ private:
                            MV_FRAME_OUT_INFO_EX *info);
 
   bool createHandle(const MV_CC_DEVICE_INFO* info, CameraContext& ctx);
-
   bool doInit(const std::vector<CameraParams>& configs);
+  bool waitForFrameSync(uint64_t target_frame);
+  double getAverageFrameRate() const;
 };
