@@ -4,7 +4,7 @@ hk_camera_stitching_node:
     config_file: "dual_camera.yaml"
     homography_file: "H_right_to_left.yaml"
     enable_stitching: true
-    publish_individual_images: true
+    publish_individual_images: false
     loop_rate_hz: 90
     
     # 平场校正设置
