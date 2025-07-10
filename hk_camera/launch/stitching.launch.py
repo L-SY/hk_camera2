@@ -25,8 +25,8 @@ def generate_launch_description():
         # 基础相机拼接节点
         Node(
             package='hk_camera',
-            executable='hk_camera_camera_stitching_node_main',
-            name='hk_camera_camera_stitching_node',
+            executable='camera_stitching_node_main',
+            name='camera_stitching_node',
             output='screen',
             parameters=[camera_stitching_config],
         ),
@@ -34,8 +34,8 @@ def generate_launch_description():
         # 连续拼接节点（只使用自己的配置参数）
         Node(
             package='hk_camera',
-            executable='hk_camera_stitching_node_main',
-            name='hk_camera_stitching_node',
+            executable='stitching_node_main',
+            name='stitching_node',
             output='screen',
             parameters=[continuous_stitching_config],
         ),

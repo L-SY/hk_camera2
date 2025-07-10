@@ -1,5 +1,5 @@
-#ifndef HK_CAMERA_CAMERA_STITCHING_NODE_HPP
-#define HK_CAMERA_CAMERA_STITCHING_NODE_HPP
+#ifndef CAMERA_STITCHING_NODE_HPP
+#define CAMERA_STITCHING_NODE_HPP
 
 #include "hk_camera/hk_camera_node.hpp"
 #include <opencv2/opencv.hpp>
@@ -7,9 +7,9 @@
 #include <string>
 #include <atomic>
 
-class HKCameraCameraStitchingNode : public HKCameraNode {
+class CameraStitchingNode : public HKCameraNode {
 public:
-    explicit HKCameraCameraStitchingNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
+    explicit CameraStitchingNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
     
     void spin() override;
 
@@ -68,4 +68,4 @@ private:
     std::atomic<bool> processing_active_{false};
 };
 
-#endif // HK_CAMERA_CAMERA_STITCHING_NODE_HPP 
+#endif // CAMERA_STITCHING_NODE_HPP 

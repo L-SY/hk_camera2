@@ -1,5 +1,5 @@
-#ifndef HK_CAMERA_STITCHING_NODE_HPP
-#define HK_CAMERA_STITCHING_NODE_HPP
+#ifndef STITCHING_NODE_HPP
+#define STITCHING_NODE_HPP
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
@@ -9,9 +9,9 @@
 #include <atomic>
 #include <mutex>
 
-class HKCameraStitchingNode : public rclcpp::Node {
+class StitchingNode : public rclcpp::Node {
 public:
-    explicit HKCameraStitchingNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
+    explicit StitchingNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
     
     void spin();
 
@@ -82,4 +82,4 @@ private:
     std::atomic<bool> continuous_processing_active_{false};
 };
 
-#endif // HK_CAMERA_STITCHING_NODE_HPP 
+#endif // STITCHING_NODE_HPP 

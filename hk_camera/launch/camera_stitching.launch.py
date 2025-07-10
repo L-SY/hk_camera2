@@ -16,8 +16,8 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='hk_camera',
-            executable='hk_camera_camera_stitching_node_main',
-            name='hk_camera_camera_stitching_node',
+            executable='camera_stitching_node_main',
+            name='camera_stitching_node',
             output='screen',
             parameters=[config_file],
         ),

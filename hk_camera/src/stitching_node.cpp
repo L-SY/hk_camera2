@@ -1,19 +1,19 @@
-#include "hk_camera/hk_camera_stitching_node.hpp"
+#include "hk_camera/stitching_node.hpp"
 #include <cv_bridge/cv_bridge.h>
 #include <algorithm>
 #include <iostream>
 
-HKCameraStitchingNode::HKCameraStitchingNode(const rclcpp::NodeOptions& options)
-    : rclcpp::Node("hk_camera_stitching_node", options) {
-    RCLCPP_INFO(get_logger(), "HKCameraStitchingNode constructor called");
+StitchingNode::StitchingNode(const rclcpp::NodeOptions& options)
+    : rclcpp::Node("stitching_node", options) {
+    RCLCPP_INFO(get_logger(), "StitchingNode constructor called");
     
     // 初始化连续拼接功能
     initialize();
     
-    RCLCPP_INFO(get_logger(), "HKCameraStitchingNode constructor completed");
+    RCLCPP_INFO(get_logger(), "StitchingNode constructor completed");
 }
 
-void HKCameraStitchingNode::initialize() {
+void StitchingNode::initialize() {
     // 初始化连续拼接特有的功能
     initialize_continuous_stitching();
     setup_publishers();
@@ -26,7 +26,7 @@ void HKCameraStitchingNode::initialize() {
     );
 }
 
-void HKCameraStitchingNode::initialize_continuous_stitching() {
+void StitchingNode::initialize_continuous_stitching() {
     // 声明连续拼接特有的参数
     declare_parameter<bool>("enable_continuous_stitching", true);
     declare_parameter<bool>("debug_mode", false);
@@ -70,7 +70,7 @@ void HKCameraStitchingNode::initialize_continuous_stitching() {
                 deploy_mode_ ? "enabled" : "disabled");
 }
 
-void HKCameraStitchingNode::setup_publishers() {
+void StitchingNode::setup_publishers() {
     // 设置连续拼接特有的发布者
     
     // 设置连续拼接特有的发布者
@@ -86,13 +86,13 @@ void HKCameraStitchingNode::setup_publishers() {
         // 订阅基类的拼接结果
         stitched_image_sub_ = create_subscription<sensor_msgs::msg::Image>(
             "/stitched_image", 10,
-            std::bind(&HKCameraStitchingNode::stitched_image_callback, this, std::placeholders::_1));
+            std::bind(&StitchingNode::stitched_image_callback, this, std::placeholders::_1));
         
         RCLCPP_INFO(get_logger(), "Continuous stitching publishers and subscriber created");
     }
 }
 
-rcl_interfaces::msg::SetParametersResult HKCameraStitchingNode::on_param_change(const std::vector<rclcpp::Parameter>& params) {
+rcl_interfaces::msg::SetParametersResult StitchingNode::on_param_change(const std::vector<rclcpp::Parameter>& params) {
     rcl_interfaces::msg::SetParametersResult result;
     result.successful = true;
     
@@ -145,7 +145,7 @@ rcl_interfaces::msg::SetParametersResult HKCameraStitchingNode::on_param_change(
     return result;
 }
 
-void HKCameraStitchingNode::stitched_image_callback(const sensor_msgs::msg::Image::SharedPtr msg) {
+void StitchingNode::stitched_image_callback(const sensor_msgs::msg::Image::SharedPtr msg) {
     if (!enable_continuous_stitching_) {
         return;
     }
@@ -166,7 +166,7 @@ void HKCameraStitchingNode::stitched_image_callback(const sensor_msgs::msg::Imag
     }
 }
 
-void HKCameraStitchingNode::continuous_stitch_images(const cv::Mat& current_image, const std_msgs::msg::Header& header) {
+void StitchingNode::continuous_stitch_images(const cv::Mat& current_image, const std_msgs::msg::Header& header) {
     std::lock_guard<std::mutex> lock(panorama_mutex_);
     
     // 初始化全景图或自动重置
@@ -220,7 +220,7 @@ void HKCameraStitchingNode::continuous_stitch_images(const cv::Mat& current_imag
     publish_continuous_stitched_image(header);
 }
 
-bool HKCameraStitchingNode::detect_and_match_features(const cv::Mat& prev_image, const cv::Mat& curr_image, 
+bool StitchingNode::detect_and_match_features(const cv::Mat& prev_image, const cv::Mat& curr_image, 
                                                      std::vector<cv::KeyPoint>& kp_prev, std::vector<cv::KeyPoint>& kp_curr,
                                                      std::vector<cv::DMatch>& good_matches) {
     // 转换为灰度图
@@ -261,7 +261,7 @@ bool HKCameraStitchingNode::detect_and_match_features(const cv::Mat& prev_image,
     return good_matches.size() >= static_cast<size_t>(min_matches_);
 }
 
-cv::Point2f HKCameraStitchingNode::estimate_transform(const std::vector<cv::KeyPoint>& kp1, 
+cv::Point2f StitchingNode::estimate_transform(const std::vector<cv::KeyPoint>& kp1, 
                                                      const std::vector<cv::KeyPoint>& kp2, 
                                                      const std::vector<cv::DMatch>& matches) {
     if (matches.size() < static_cast<size_t>(min_matches_)) {
@@ -291,7 +291,7 @@ cv::Point2f HKCameraStitchingNode::estimate_transform(const std::vector<cv::KeyP
     }
 }
 
-void HKCameraStitchingNode::perform_continuous_stitching(const cv::Mat& current_image, const cv::Point2f& offset) {
+void StitchingNode::perform_continuous_stitching(const cv::Mat& current_image, const cv::Point2f& offset) {
     if (continuous_panorama_.empty()) {
         return;
     }
@@ -339,7 +339,7 @@ void HKCameraStitchingNode::perform_continuous_stitching(const cv::Mat& current_
                 shift, continuous_panorama_.cols, continuous_panorama_.rows);
 }
 
-void HKCameraStitchingNode::publish_continuous_stitched_image(const std_msgs::msg::Header& header) {
+void StitchingNode::publish_continuous_stitched_image(const std_msgs::msg::Header& header) {
     if (continuous_panorama_.empty() || !continuous_stitched_pub_) {
         return;
     }
@@ -352,7 +352,7 @@ void HKCameraStitchingNode::publish_continuous_stitched_image(const std_msgs::ms
     continuous_stitched_pub_->publish(*cv_image.toImageMsg());
 }
 
-void HKCameraStitchingNode::publish_match_visualization(const cv::Mat& img1, const cv::Mat& img2, 
+void StitchingNode::publish_match_visualization(const cv::Mat& img1, const cv::Mat& img2, 
                                                        const std::vector<cv::KeyPoint>& kp1, const std::vector<cv::KeyPoint>& kp2,
                                                        const std::vector<cv::DMatch>& matches, const std_msgs::msg::Header& header) {
     if (!continuous_matches_pub_) {
@@ -376,21 +376,21 @@ void HKCameraStitchingNode::publish_match_visualization(const cv::Mat& img1, con
     continuous_matches_pub_->publish(*cv_image.toImageMsg());
 }
 
-void HKCameraStitchingNode::reset_continuous_panorama() {
+void StitchingNode::reset_continuous_panorama() {
     std::lock_guard<std::mutex> lock(panorama_mutex_);
     continuous_panorama_ = cv::Mat();
     last_image_ = cv::Mat();
     RCLCPP_INFO(get_logger(), "Continuous panorama reset");
 }
 
-cv::Mat HKCameraStitchingNode::enhance_image(const cv::Mat& image) {
+cv::Mat StitchingNode::enhance_image(const cv::Mat& image) {
     cv::Mat enhanced;
     // 可以添加图像增强处理，如对比度调整等
     image.copyTo(enhanced);
     return enhanced;
 }
 
-cv::Mat HKCameraStitchingNode::apply_histogram_equalization(const cv::Mat& image) {
+cv::Mat StitchingNode::apply_histogram_equalization(const cv::Mat& image) {
     cv::Mat result;
     if (image.channels() == 3) {
         cv::cvtColor(image, result, cv::COLOR_BGR2YUV);
@@ -405,11 +405,11 @@ cv::Mat HKCameraStitchingNode::apply_histogram_equalization(const cv::Mat& image
     return result;
 }
 
-void HKCameraStitchingNode::spin() {
+void StitchingNode::spin() {
     // 连续拼接节点主循环
     rclcpp::spin(shared_from_this());
 }
 
-void HKCameraStitchingNode::process_and_publish_continuous_images() {
+void StitchingNode::process_and_publish_continuous_images() {
     // 这个方法现在通过回调函数处理，不需要在主循环中调用
 } 

@@ -1,4 +1,4 @@
-hk_camera_camera_stitching_node:
+camera_stitching_node:
   ros__parameters:
     # 基本设置 - 使用package相对路径
     config_file: "dual_camera.yaml"

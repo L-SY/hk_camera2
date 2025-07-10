@@ -1,4 +1,4 @@
-#include "hk_camera/hk_camera_camera_stitching_node.hpp"
+#include "hk_camera/camera_stitching_node.hpp"
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <yaml-cpp/yaml.h>
@@ -6,16 +6,16 @@
 #include <algorithm>
 #include <iostream>
 
-HKCameraCameraStitchingNode::HKCameraCameraStitchingNode(const rclcpp::NodeOptions& options)
-    : HKCameraNode("hk_camera_camera_stitching_node", options) {
-  RCLCPP_INFO(get_logger(), "HKCameraCameraStitchingNode constructor called");
+CameraStitchingNode::CameraStitchingNode(const rclcpp::NodeOptions& options)
+    : HKCameraNode("camera_stitching_node", options) {
+  RCLCPP_INFO(get_logger(), "CameraStitchingNode constructor called");
   // 基类构造函数已经调用了 initialize()，相机已经初始化好了
   // 现在只需要初始化拼接特有的参数和发布者
   initialize_stitching_specific();
-  RCLCPP_INFO(get_logger(), "HKCameraStitchingNode constructor completed");
+  RCLCPP_INFO(get_logger(), "CameraStitchingNode constructor completed");
 }
 
-void HKCameraCameraStitchingNode::initialize_stitching_specific() {
+void CameraStitchingNode::initialize_stitching_specific() {
   // 基类已经初始化了相机，现在只需要初始化拼接特有的功能
   
   // 声明拼接特有的参数
@@ -117,7 +117,7 @@ void HKCameraCameraStitchingNode::initialize_stitching_specific() {
 
 
 
-bool HKCameraCameraStitchingNode::load_homography_matrix() {
+bool CameraStitchingNode::load_homography_matrix() {
   std::string homography_file;
   if (!get_parameter_or<std::string>("homography_file", homography_file, "")) {
     // 尝试默认路径
@@ -193,7 +193,7 @@ bool HKCameraCameraStitchingNode::load_homography_matrix() {
   }
 }
 
-void HKCameraCameraStitchingNode::setup_publishers() {
+void CameraStitchingNode::setup_publishers() {
   // 先调用基类的 setup_publishers 来设置个人相机发布者
   HKCameraNode::setup_publishers();
   
@@ -207,7 +207,7 @@ void HKCameraCameraStitchingNode::setup_publishers() {
 
 
 
-rcl_interfaces::msg::SetParametersResult HKCameraCameraStitchingNode::on_param_change(const std::vector<rclcpp::Parameter>& params) {
+rcl_interfaces::msg::SetParametersResult CameraStitchingNode::on_param_change(const std::vector<rclcpp::Parameter>& params) {
   // 先调用基类的参数处理
   rcl_interfaces::msg::SetParametersResult result = HKCameraNode::on_param_change(params);
   
@@ -299,7 +299,7 @@ rcl_interfaces::msg::SetParametersResult HKCameraCameraStitchingNode::on_param_c
   return result;
 }
 
-cv::Mat HKCameraCameraStitchingNode::correct_flat(const cv::Mat& image, const cv::Mat& flat_map, double epsilon) {
+cv::Mat CameraStitchingNode::correct_flat(const cv::Mat& image, const cv::Mat& flat_map, double epsilon) {
   cv::Mat image_f32, result;
   image.convertTo(image_f32, CV_32F, 1.0/255.0);
   
@@ -321,7 +321,7 @@ cv::Mat HKCameraCameraStitchingNode::correct_flat(const cv::Mat& image, const cv
   return result;
 }
 
-cv::Mat HKCameraCameraStitchingNode::warp_and_stitch(const cv::Mat& img_left, const cv::Mat& img_right, const cv::Mat& H) {
+cv::Mat CameraStitchingNode::warp_and_stitch(const cv::Mat& img_left, const cv::Mat& img_right, const cv::Mat& H) {
   int h_left = img_left.rows, w_left = img_left.cols;
   int h_right = img_right.rows, w_right = img_right.cols;
 
@@ -452,7 +452,7 @@ cv::Mat HKCameraCameraStitchingNode::warp_and_stitch(const cv::Mat& img_left, co
   return stitched_result_;
 }
 
-cv::Mat HKCameraCameraStitchingNode::apply_roi_crop(const cv::Mat& image, const cv::Rect& roi) {
+cv::Mat CameraStitchingNode::apply_roi_crop(const cv::Mat& image, const cv::Rect& roi) {
   if (roi.width <= 0 || roi.height <= 0) {
     return image;  // 无效ROI，返回原图
   }
@@ -468,7 +468,7 @@ cv::Mat HKCameraCameraStitchingNode::apply_roi_crop(const cv::Mat& image, const 
   return image(safe_roi).clone();
 }
 
-cv::Rect HKCameraCameraStitchingNode::calculate_roi_from_percent(int image_width, int image_height, 
+cv::Rect CameraStitchingNode::calculate_roi_from_percent(int image_width, int image_height, 
                                                           double x_percent, double y_percent, 
                                                           double width_percent, double height_percent) {
   int x = static_cast<int>(image_width * x_percent);
@@ -485,7 +485,7 @@ cv::Rect HKCameraCameraStitchingNode::calculate_roi_from_percent(int image_width
   return cv::Rect(x, y, width, height);
 }
 
-void HKCameraCameraStitchingNode::process_and_publish_images() {
+void CameraStitchingNode::process_and_publish_images() {
   if (processing_active_.load()) {
     return;  // 避免重入
   }
@@ -702,7 +702,7 @@ void HKCameraCameraStitchingNode::process_and_publish_images() {
   processing_active_.store(false);
 }
 
-cv::Mat HKCameraCameraStitchingNode::blend_images_advanced(const cv::Mat& canvas, const cv::Mat& warped_right, 
+cv::Mat CameraStitchingNode::blend_images_advanced(const cv::Mat& canvas, const cv::Mat& warped_right, 
                                                    const cv::Mat& mask_left, const cv::Mat& mask_right, 
                                                    const cv::Rect& /* left_rect_on_canvas */) {
   cv::Mat result = canvas.clone();
@@ -843,7 +843,7 @@ cv::Mat HKCameraCameraStitchingNode::blend_images_advanced(const cv::Mat& canvas
   return result;
 }
 
-cv::Mat HKCameraCameraStitchingNode::create_feather_mask(const cv::Mat& mask, int feather_size) {
+cv::Mat CameraStitchingNode::create_feather_mask(const cv::Mat& mask, int feather_size) {
   cv::Mat feather_mask;
   mask.convertTo(feather_mask, CV_32F, 1.0/255.0);
   
@@ -871,7 +871,7 @@ cv::Mat HKCameraCameraStitchingNode::create_feather_mask(const cv::Mat& mask, in
   return feather_mask;
 }
 
-cv::Mat HKCameraCameraStitchingNode::apply_gamma_correction(const cv::Mat& image, double gamma) {
+cv::Mat CameraStitchingNode::apply_gamma_correction(const cv::Mat& image, double gamma) {
   cv::Mat result;
   cv::Mat lookup_table(1, 256, CV_8U);
   uchar* p = lookup_table.ptr();
@@ -882,7 +882,7 @@ cv::Mat HKCameraCameraStitchingNode::apply_gamma_correction(const cv::Mat& image
   return result;
 }
 
-void HKCameraCameraStitchingNode::spin() {
+void CameraStitchingNode::spin() {
   rclcpp::Rate rate(loop_rate_hz_);
   
   // 性能监控变量

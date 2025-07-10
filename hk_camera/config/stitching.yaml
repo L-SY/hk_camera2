@@ -1,4 +1,4 @@
-hk_camera_stitching_node:
+stitching_node:
   ros__parameters:
     # 禁用基类的相机功能，因为连续拼接不需要直接访问相机
     config_file: ""  # 空配置文件路径，跳过相机初始化
@@ -23,7 +23,7 @@ hk_camera_stitching_node:
     stitch_along_y: true       # 拼接方向：true为垂直，false为水平
     
     # 注意：
-    # - 基础拼接参数继承自基类HKCameraCameraStitchingNode
+    # - 基础拼接参数继承自基类CameraStitchingNode
     # - debug_mode=true 且 deploy_mode=false 时会发布调试信息
     # - deploy_mode=true 时只发布 /continuous_stitched_image 话题
     # - 连续拼接会订阅基类发布的 /stitched_image 话题作为输入 
