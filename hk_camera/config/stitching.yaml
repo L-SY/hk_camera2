@@ -1,0 +1,29 @@
+hk_camera_stitching_node:
+  ros__parameters:
+    # 禁用基类的相机功能，因为连续拼接不需要直接访问相机
+    config_file: ""  # 空配置文件路径，跳过相机初始化
+    
+    # ===== 连续拼接特有参数 =====
+    # 连续拼接控制
+    enable_continuous_stitching: true
+    debug_mode: true          # 调试模式：发布调试信息和匹配可视化
+    deploy_mode: true          # 部署模式：仅发布最终结果，减少系统开销
+    
+    # 特征检测参数
+    orb_features: 1000         # ORB特征点数量
+    match_ratio: 0.75          # Lowe's ratio test阈值
+    min_matches: 4             # 最小匹配点数量
+    
+    # 拼接控制参数
+    min_shift: 1               # 最小有效位移（像素）
+    max_shift: 200             # 最大有效位移（像素）
+    max_panorama_width: 10000000  # 最大全景图宽度（像素）
+    auto_reset: false          # 自动重置全景图
+    reset_now: false           # 立即重置全景图
+    stitch_along_y: true       # 拼接方向：true为垂直，false为水平
+    
+    # 注意：
+    # - 基础拼接参数继承自基类HKCameraCameraStitchingNode
+    # - debug_mode=true 且 deploy_mode=false 时会发布调试信息
+    # - deploy_mode=true 时只发布 /continuous_stitched_image 话题
+    # - 连续拼接会订阅基类发布的 /stitched_image 话题作为输入 

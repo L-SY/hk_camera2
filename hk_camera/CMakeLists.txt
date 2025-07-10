@@ -25,7 +25,7 @@ include_directories(
 link_directories(/opt/MVS/lib/64)
 
 # Source files (排除main文件，避免重复定义)
-file(GLOB SOURCES "src/camera_manager.cpp" "src/hk_camera_node.cpp" "src/hk_camera_stitching_node.cpp")
+file(GLOB SOURCES "src/camera_manager.cpp" "src/hk_camera_node.cpp" "src/hk_camera_camera_stitching_node.cpp" "src/hk_camera_stitching_node.cpp")
 
 # Create library
 add_library(${PROJECT_NAME} ${SOURCES})
@@ -43,7 +43,13 @@ target_link_libraries(hk_camera_node_main ${PROJECT_NAME} ${OpenCV_LIBS} MvCamer
 ament_target_dependencies(hk_camera_node_main rclcpp sensor_msgs cv_bridge yaml-cpp)
 install(TARGETS hk_camera_node_main DESTINATION lib/${PROJECT_NAME})
 
-# 新增拼接节点可执行文件
+# 新增相机拼接节点可执行文件（基础拼接）
+add_executable(hk_camera_camera_stitching_node_main src/hk_camera_camera_stitching_node_main.cpp)
+target_link_libraries(hk_camera_camera_stitching_node_main ${PROJECT_NAME} ${OpenCV_LIBS} MvCameraControl yaml-cpp)
+ament_target_dependencies(hk_camera_camera_stitching_node_main rclcpp sensor_msgs cv_bridge yaml-cpp ament_index_cpp)
+install(TARGETS hk_camera_camera_stitching_node_main DESTINATION lib/${PROJECT_NAME})
+
+# 新增连续拼接节点可执行文件
 add_executable(hk_camera_stitching_node_main src/hk_camera_stitching_node_main.cpp)
 target_link_libraries(hk_camera_stitching_node_main ${PROJECT_NAME} ${OpenCV_LIBS} MvCameraControl yaml-cpp)
 ament_target_dependencies(hk_camera_stitching_node_main rclcpp sensor_msgs cv_bridge yaml-cpp ament_index_cpp)

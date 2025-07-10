@@ -1,10 +1,10 @@
-hk_camera_stitching_node:
+hk_camera_camera_stitching_node:
   ros__parameters:
     # 基本设置 - 使用package相对路径
     config_file: "dual_camera.yaml"
     homography_file: "H_right_to_left.yaml"
     enable_stitching: true
-    publish_individual_images: false
+    publish_individual_images: true
     loop_rate_hz: 90
     
     # 平场校正设置
@@ -23,9 +23,9 @@ hk_camera_stitching_node:
     
     # 拼接后ROI参数（百分比形式，0.0-1.0）
     # 用于从拼接后的大图中裁剪出感兴趣区域
-    stitched_roi_x_percent: 0.24      # 拼接图X起始位置百分比
+    stitched_roi_x_percent: 0.238      # 拼接图X起始位置百分比
     stitched_roi_y_percent: 0.03      # 拼接图Y起始位置百分比
-    stitched_roi_width_percent: 0.53  # 拼接图宽度百分比
+    stitched_roi_width_percent: 0.515  # 拼接图宽度百分比
     stitched_roi_height_percent: 0.93 # 拼接图高度百分比
     
     # 单独发布的相机图像ROI设置（可选）
