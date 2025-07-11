@@ -134,7 +134,9 @@ rcl_interfaces::msg::SetParametersResult StitchingNode::on_param_change(const st
             reset_now_ = param.as_bool();
             if (reset_now_) {
                 reset_continuous_panorama();
-                RCLCPP_INFO(get_logger(), "Continuous panorama reset");
+                // 重置后立即将reset_now设为false，避免重复重置
+                this->set_parameter(rclcpp::Parameter("reset_now", false));
+                RCLCPP_INFO(get_logger(), "Continuous panorama reset triggered");
             }
         } else if (param.get_name() == "stitch_along_y") {
             stitch_along_y_ = param.as_bool();
@@ -169,8 +171,17 @@ void StitchingNode::stitched_image_callback(const sensor_msgs::msg::Image::Share
 void StitchingNode::continuous_stitch_images(const cv::Mat& current_image, const std_msgs::msg::Header& header) {
     std::lock_guard<std::mutex> lock(panorama_mutex_);
     
-    // 初始化全景图或自动重置
-    if (auto_reset_ || continuous_panorama_.empty() || last_image_.empty()) {
+    // 自动重置模式：每次都重新初始化
+    if (auto_reset_) {
+        RCLCPP_INFO(get_logger(), "Auto reset: reinitializing panorama with current frame");
+        continuous_panorama_ = current_image.clone();
+        last_image_ = current_image.clone();
+        publish_continuous_stitched_image(header);
+        return;
+    }
+    
+    // 正常模式：只在首次或图像为空时初始化
+    if (continuous_panorama_.empty() || last_image_.empty()) {
         RCLCPP_INFO(get_logger(), "Initializing continuous panorama with first frame");
         continuous_panorama_ = current_image.clone();
         last_image_ = current_image.clone();
@@ -204,8 +215,8 @@ void StitchingNode::continuous_stitch_images(const cv::Mat& current_image, const
     // 检查偏移有效性
     float shift = stitch_along_y_ ? offset.y : offset.x;
     if (std::abs(shift) < min_shift_ || std::abs(shift) > max_shift_) {
-        RCLCPP_WARN(get_logger(), "Shift %.1f out of valid range [%d, %d]", 
-                   shift, min_shift_, max_shift_);
+        // RCLCPP_WARN(get_logger(), "Shift %.1f out of valid range [%d, %d]", 
+        //            shift, min_shift_, max_shift_);
         last_image_ = current_image.clone();
         return;
     }

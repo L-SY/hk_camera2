@@ -209,7 +209,7 @@ void __stdcall CameraManager::imageCallback(unsigned char *pData,
   if (elapsed >= 5000) {  // Report every 5 seconds
     int current_count = g_callback_count.load();
     double fps = (current_count - last_count) * 1000.0 / elapsed;
-    std::cout << "[CALLBACK] FPS: " << fps << " (total: " << current_count << ")" << std::endl;
+    // std::cout << "[CALLBACK] FPS: " << fps << " (total: " << current_count << ")" << std::endl;
     last_count = current_count;
     last_time = now;
   }
@@ -274,7 +274,7 @@ void CameraManager::enqueueImage(CameraContext &ctx,
   static int process_count = 0;
   process_count++;
   if (process_count % 100 == 0) {
-    std::cout << "[PROCESS] Image processing took: " << duration.count() << " μs" << std::endl;
+    // std::cout << "[PROCESS] Image processing took: " << duration.count() << " μs" << std::endl;
   }
 
   std::lock_guard<std::mutex> lock(ctx.mtx);
@@ -290,7 +290,7 @@ void CameraManager::enqueueImage(CameraContext &ctx,
   if (ctx.image_queue.size() > 3) {
     static int warn_count = 0;
     if (++warn_count % 100 == 0) {  // Reduce log spam
-      std::cout << "[WARN] Image queue size: " << ctx.image_queue.size() << std::endl;
+      // std::cout << "[WARN] Image queue size: " << ctx.image_queue.size() << std::endl;
     }
   }
 }
@@ -330,7 +330,7 @@ bool CameraManager::getSyncedImages(std::vector<cv::Mat> &images) {
     // Log sync status occasionally
     static int sync_count = 0;
     if (++sync_count % 100 == 0) {
-      std::cout << "[SYNC] Successfully synchronized frame " << target_frame << std::endl;
+      // std::cout << "[SYNC] Successfully synchronized frame " << target_frame << std::endl;
     }
   }
   
@@ -361,9 +361,9 @@ bool CameraManager::waitForFrameSync(uint64_t target_frame) {
   }
   
   // Log sync failure
-  std::cout << "[SYNC] Frame sync timeout for frame " << target_frame << std::endl;
+  // std::cout << "[SYNC] Frame sync timeout for frame " << target_frame << std::endl;
   for (size_t i = 0; i < cameras_.size(); ++i) {
-    std::cout << "  Camera " << i << " frame: " << cameras_[i].frame_counter.load() << std::endl;
+    // std::cout << "  Camera " << i << " frame: " << cameras_[i].frame_counter.load() << std::endl;
   }
   
   return false;
