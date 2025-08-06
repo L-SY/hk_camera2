@@ -1,7 +1,7 @@
 camera_stitching_node:
   ros__parameters:
     # 基本设置 - 使用package相对路径
-    config_file: "dual_camera.yaml"
+    config_file: "dual_camera_black.yaml"
     homography_file: "H_right_to_left.yaml"
     enable_stitching: true
     publish_individual_images: true
@@ -13,7 +13,7 @@ camera_stitching_node:
     flat_field_right: ""
     
     # 拼接和融合设置
-    enable_blending: true           # 启用重叠区域融合
+    enable_blending: false           # 启用重叠区域融合
     blend_strength: 1.0            # 融合强度 (0.0-1.0)
     blend_mode: "linear"           # 融合模式: "none", "linear", "weighted", "feather"
     blend_feather_size: 50         # 羽化边缘大小（像素）

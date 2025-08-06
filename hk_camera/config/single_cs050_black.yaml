@@ -1,0 +1,23 @@
+cameras:
+  - name: cs050_black
+    serial_number: "DA6707088"
+    exposure:
+      auto: false
+      min: 15
+      max: 13319
+      mode: 0
+      value: 5000.0
+    gain:
+      auto: false
+      min: 0.0
+      max: 22.0
+      value: 6.0
+    white_balance:
+      auto: false
+    roi:
+      width: 2448
+      height: 2048
+      offset_x: 0
+      offset_y: 0
+
+loop_rate_hz: 90

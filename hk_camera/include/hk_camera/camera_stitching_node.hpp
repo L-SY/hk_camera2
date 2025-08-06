@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <atomic>
+#include <rclcpp/rclcpp.hpp>
 
 class CameraStitchingNode : public HKCameraNode {
 public:

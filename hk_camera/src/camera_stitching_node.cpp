@@ -8,17 +8,10 @@
 
 CameraStitchingNode::CameraStitchingNode(const rclcpp::NodeOptions& options)
     : HKCameraNode("camera_stitching_node", options) {
-  // //RCLCPP_INFO(get_logger(), "CameraStitchingNode constructor called");
-  // 基类构造函数已经调用了 initialize()，相机已经初始化好了
-  // 现在只需要初始化拼接特有的参数和发布者
   initialize_stitching_specific();
-  // //RCLCPP_INFO(get_logger(), "CameraStitchingNode constructor completed");
 }
 
 void CameraStitchingNode::initialize_stitching_specific() {
-  // 基类已经初始化了相机，现在只需要初始化拼接特有的功能
-  
-  // 声明拼接特有的参数
   declare_parameter<std::string>("homography_file", "");
   declare_parameter<bool>("enable_stitching", true);
   declare_parameter<bool>("publish_individual_images", false);
@@ -26,7 +19,6 @@ void CameraStitchingNode::initialize_stitching_specific() {
   declare_parameter<std::string>("flat_field_left", "");
   declare_parameter<std::string>("flat_field_right", "");
   
-  // 声明融合参数
   declare_parameter<bool>("enable_blending", true);
   declare_parameter<double>("blend_strength", 1.0);
   declare_parameter<std::string>("blend_mode", "linear");
@@ -37,11 +29,10 @@ void CameraStitchingNode::initialize_stitching_specific() {
   declare_parameter<bool>("publish_individual_roi", false);
   
   if (!load_homography_matrix()) {
-    // RCLCPP_FATAL(get_logger(), "Failed to load homography matrix");
+    RCLCPP_FATAL(get_logger(), "Failed to load homography matrix");
     return;
   }
   
-  // 加载平场校正文件（如果启用）
   use_flat_field_ = get_parameter("use_flat_field").as_bool();
   if (use_flat_field_) {
     std::string flat_left_path = get_parameter("flat_field_left").as_string();
@@ -52,22 +43,18 @@ void CameraStitchingNode::initialize_stitching_specific() {
         flat_left_ = cv::imread(flat_left_path, cv::IMREAD_GRAYSCALE);
         flat_right_ = cv::imread(flat_right_path, cv::IMREAD_GRAYSCALE);
         if (flat_left_.empty() || flat_right_.empty()) {
-          // RCLCPP_WARN(get_logger(), "Failed to load flat field images, disabling flat field correction");
+          RCLCPP_WARN(get_logger(), "Failed to load flat field images, disabling flat field correction");
           use_flat_field_ = false;
         } else {
-          // 转换为浮点数并归一化
           flat_left_.convertTo(flat_left_, CV_32F, 1.0/255.0);
           flat_right_.convertTo(flat_right_, CV_32F, 1.0/255.0);
-          // //RCLCPP_INFO(get_logger(), "Flat field correction enabled");
         }
       } catch (const std::exception& e) {
-        // RCLCPP_WARN(get_logger(), "Failed to load flat field files: %s", e.what());
         use_flat_field_ = false;
       }
     }
   }
   
-  // 获取其他参数
   enable_stitching_ = get_parameter("enable_stitching").as_bool();
   publish_individual_images_ = get_parameter("publish_individual_images").as_bool();
   enable_blending_ = get_parameter("enable_blending").as_bool();
@@ -79,40 +66,26 @@ void CameraStitchingNode::initialize_stitching_specific() {
   blend_priority_strength_ = get_parameter("blend_priority_strength").as_double();
   blend_gamma_correction_ = get_parameter("blend_gamma_correction").as_double();
   
-  // //RCLCPP_INFO(get_logger(), "Fusion parameters - mode: %s, strength: %.2f, feather: %d, priority: %s, gamma: %.2f", 
-  //             blend_mode_.c_str(), blend_strength_, blend_feather_size_, blend_overlap_priority_.c_str(), blend_gamma_correction_);
-  
-  // 声明ROI动态参数（使用百分比，范围0.0-1.0）
   auto roi_desc = rcl_interfaces::msg::ParameterDescriptor{};
   roi_desc.description = "ROI coordinate as percentage (0.0-1.0)";
   roi_desc.floating_point_range.resize(1);
   roi_desc.floating_point_range[0].from_value = 0.0;
   roi_desc.floating_point_range[0].to_value = 1.0;
-  
-  // 左相机ROI参数（百分比）
+
   declare_parameter<double>("left_roi_x_percent", 0.0, roi_desc);
   declare_parameter<double>("left_roi_y_percent", 0.0, roi_desc);
   declare_parameter<double>("left_roi_width_percent", 1.0, roi_desc);
   declare_parameter<double>("left_roi_height_percent", 1.0, roi_desc);
   
-  // 右相机ROI参数（百分比）
   declare_parameter<double>("right_roi_x_percent", 0.0, roi_desc);
   declare_parameter<double>("right_roi_y_percent", 0.0, roi_desc);
   declare_parameter<double>("right_roi_width_percent", 1.0, roi_desc);
   declare_parameter<double>("right_roi_height_percent", 1.0, roi_desc);
   
-  // 拼接后ROI参数（百分比）
   declare_parameter<double>("stitched_roi_x_percent", 0.0, roi_desc);
   declare_parameter<double>("stitched_roi_y_percent", 0.0, roi_desc);
   declare_parameter<double>("stitched_roi_width_percent", 1.0, roi_desc);
   declare_parameter<double>("stitched_roi_height_percent", 1.0, roi_desc);
-  
-  // //RCLCPP_INFO(get_logger(), "ROI parameters initialized with percentage values");
-  
-  // //RCLCPP_INFO(get_logger(), "Camera stitching node initialized successfully");
-  // //RCLCPP_INFO(get_logger(), "Stitching enabled: %s", enable_stitching_ ? "true" : "false");
-  // //RCLCPP_INFO(get_logger(), "Publish individual images: %s", publish_individual_images_ ? "true" : "false");
-  // //RCLCPP_INFO(get_logger(), "Loop rate: %d Hz", loop_rate_hz_);
 }
 
 
@@ -120,41 +93,42 @@ void CameraStitchingNode::initialize_stitching_specific() {
 bool CameraStitchingNode::load_homography_matrix() {
   std::string homography_file;
   if (!get_parameter_or<std::string>("homography_file", homography_file, "")) {
-    // 尝试默认路径
     try {
-      std::string pkg_path = ament_index_cpp::get_package_share_directory("hk_camera");
-      homography_file = pkg_path + "/files/H_right_to_left.yaml";
-      // //RCLCPP_INFO(get_logger(), "Using default homography file: %s", homography_file.c_str());
+      std::string source_path = "/home/yang/predict_ws/src/gbx_predict/camera/hk_camera2/hk_camera/files/H_right_to_left.yaml";
+      if (std::ifstream(source_path).good()) {
+        homography_file = source_path;
+        RCLCPP_INFO(get_logger(), "Using source homography file: %s", homography_file.c_str());
+      } else {
+        std::string pkg_path = ament_index_cpp::get_package_share_directory("hk_camera");
+        homography_file = pkg_path + "/files/H_right_to_left.yaml";
+        RCLCPP_INFO(get_logger(), "Using installed homography file: %s", homography_file.c_str());
+      }
     } catch (const std::exception& e) {
-      // RCLCPP_ERROR(get_logger(), "Cannot find package path, please specify homography_file parameter");
+      RCLCPP_ERROR(get_logger(), "Cannot find package path, please specify homography_file parameter");
       return false;
     }
   } else if (homography_file.front() != '/') {
-    // 如果是相对路径，则相对于package的files目录
     try {
       std::string pkg_path = ament_index_cpp::get_package_share_directory("hk_camera");
       homography_file = pkg_path + "/files/" + homography_file;
-      // //RCLCPP_INFO(get_logger(), "Resolved homography file: %s", homography_file.c_str());
+      RCLCPP_INFO(get_logger(), "Resolved homography file: %s", homography_file.c_str());
     } catch (const std::exception& e) {
-      // RCLCPP_ERROR(get_logger(), "Cannot find package path for relative homography file: %s", e.what());
+      RCLCPP_ERROR(get_logger(), "Cannot find package path for relative homography file: %s", e.what());
       return false;
     }
   } else {
-    // //RCLCPP_INFO(get_logger(), "Using absolute homography file: %s", homography_file.c_str());
+    RCLCPP_INFO(get_logger(), "Using absolute homography file: %s", homography_file.c_str());
   }
 
   try {
     std::string yaml_file = homography_file;
     
-    // //RCLCPP_INFO(get_logger(), "Loading homography from: %s", yaml_file.c_str());
-    
-    // 如果是 .npy 文件，尝试查找对应的 .yaml 文件
+    RCLCPP_INFO(get_logger(), "Loading homography from: %s", yaml_file.c_str());
     if (homography_file.substr(homography_file.length() - 4) == ".npy") {
       yaml_file = homography_file.substr(0, homography_file.length() - 4) + ".yaml";
-      // //RCLCPP_INFO(get_logger(), "Converting .npy to .yaml path: %s", yaml_file.c_str());
+      RCLCPP_INFO(get_logger(), "Converting .npy to .yaml path: %s", yaml_file.c_str());
       if (!std::ifstream(yaml_file).good()) {
-        // 如果没有 YAML 文件，创建一个默认的单应矩阵
-        // RCLCPP_WARN(get_logger(), "Homography YAML file not found, creating identity matrix");
+        RCLCPP_WARN(get_logger(), "Homography YAML file not found, creating identity matrix");
         homography_matrix_ = cv::Mat::eye(3, 3, CV_64F);
         return true;
       }
@@ -162,47 +136,41 @@ bool CameraStitchingNode::load_homography_matrix() {
 
     cv::FileStorage fs(yaml_file, cv::FileStorage::READ);
     if (!fs.isOpened()) {
-      // RCLCPP_ERROR(get_logger(), "Cannot open homography file: %s", yaml_file.c_str());
-      // RCLCPP_ERROR(get_logger(), "File exists: %s", std::ifstream(yaml_file).good() ? "yes" : "no");
+      RCLCPP_ERROR(get_logger(), "Cannot open homography file: %s", yaml_file.c_str());
+      RCLCPP_ERROR(get_logger(), "File exists: %s", std::ifstream(yaml_file).good() ? "yes" : "no");
       return false;
     }
 
-    // 尝试不同的key名称
     if (fs["homography_matrix"].isNone() == false) {
       fs["homography_matrix"] >> homography_matrix_;
     } else if (fs["homography"].isNone() == false) {
       fs["homography"] >> homography_matrix_;
     } else {
-      // RCLCPP_ERROR(get_logger(), "No valid homography found in file (tried 'homography_matrix' and 'homography')");
+      RCLCPP_ERROR(get_logger(), "No valid homography found in file (tried 'homography_matrix' and 'homography')");
       fs.release();
       return false;
     }
     fs.release();
 
     if (homography_matrix_.empty()) {
-      // RCLCPP_ERROR(get_logger(), "Failed to load homography matrix from: %s", yaml_file.c_str());
+      RCLCPP_ERROR(get_logger(), "Failed to load homography matrix from: %s", yaml_file.c_str());
       return false;
     }
 
-    // //RCLCPP_INFO(get_logger(), "Successfully loaded homography matrix from: %s", yaml_file.c_str());
+    RCLCPP_INFO(get_logger(), "Successfully loaded homography matrix from: %s", yaml_file.c_str());
     return true;
 
   } catch (const std::exception& e) {
-    // RCLCPP_ERROR(get_logger(), "Exception loading homography: %s", e.what());
+    RCLCPP_ERROR(get_logger(), "Exception loading homography: %s", e.what());
     return false;
   }
 }
 
 void CameraStitchingNode::setup_publishers() {
-  // 先调用基类的 setup_publishers 来设置个人相机发布者
   HKCameraNode::setup_publishers();
-  
-  // 设置拼接特有的发布者
-  if (enable_stitching_) {
-    stitched_pub_ = create_publisher<sensor_msgs::msg::Image>("/stitched_image", 10);
-    debug_pub_ = create_publisher<sensor_msgs::msg::Image>("/debug_image", 10);
-    // //RCLCPP_INFO(get_logger(), "Stitching publishers created");
-  }
+
+  stitched_pub_ = create_publisher<sensor_msgs::msg::Image>("/stitched_image", 10);
+  debug_pub_ = create_publisher<sensor_msgs::msg::Image>("/debug_image", 10);
 }
 
 
@@ -213,87 +181,52 @@ rcl_interfaces::msg::SetParametersResult CameraStitchingNode::on_param_change(co
   
   // 处理拼接特有的参数
   for (const auto& param : params) {
-    if (param.get_name() == "enable_stitching") {
-      enable_stitching_ = param.as_bool();
-      //RCLCPP_INFO(get_logger(), "Updated enable_stitching to: %s", enable_stitching_ ? "true" : "false");
-    } else if (param.get_name() == "publish_individual_images") {
-      publish_individual_images_ = param.as_bool();
-      setup_publishers();  // 重新设置发布者
-      //RCLCPP_INFO(get_logger(), "Updated publish_individual_images to: %s", publish_individual_images_ ? "true" : "false");
-    } else if (param.get_name() == "left_roi_x_percent") {
-      // 参数已经由ROS2自动更新，这里只需要记录日志
-      //RCLCPP_INFO(get_logger(), "Updated left_roi_x_percent to: %.3f", param.as_double());
-      continue;
-    } else if (param.get_name() == "left_roi_y_percent") {
-      //RCLCPP_INFO(get_logger(), "Updated left_roi_y_percent to: %.3f", param.as_double());
-      continue;
-    } else if (param.get_name() == "left_roi_width_percent") {
-      //RCLCPP_INFO(get_logger(), "Updated left_roi_width_percent to: %.3f", param.as_double());
-      continue;
-    } else if (param.get_name() == "left_roi_height_percent") {
-      //RCLCPP_INFO(get_logger(), "Updated left_roi_height_percent to: %.3f", param.as_double());
-      continue;
-    } else if (param.get_name() == "right_roi_x_percent") {
-      //RCLCPP_INFO(get_logger(), "Updated right_roi_x_percent to: %.3f", param.as_double());
-      continue;
-    } else if (param.get_name() == "right_roi_y_percent") {
-      //RCLCPP_INFO(get_logger(), "Updated right_roi_y_percent to: %.3f", param.as_double());
-      continue;
-    } else if (param.get_name() == "right_roi_width_percent") {
-      //RCLCPP_INFO(get_logger(), "Updated right_roi_width_percent to: %.3f", param.as_double());
-      continue;
-    } else if (param.get_name() == "right_roi_height_percent") {
-      //RCLCPP_INFO(get_logger(), "Updated right_roi_height_percent to: %.3f", param.as_double());
-      continue;
-    } else if (param.get_name() == "stitched_roi_x_percent") {
-      //RCLCPP_INFO(get_logger(), "Updated stitched_roi_x_percent to: %.3f", param.as_double());
-      continue;
-    } else if (param.get_name() == "stitched_roi_y_percent") {
-      //RCLCPP_INFO(get_logger(), "Updated stitched_roi_y_percent to: %.3f", param.as_double());
-      continue;
-    } else if (param.get_name() == "stitched_roi_width_percent") {
-      //RCLCPP_INFO(get_logger(), "Updated stitched_roi_width_percent to: %.3f", param.as_double());
-      continue;
-    } else if (param.get_name() == "stitched_roi_height_percent") {
-      //RCLCPP_INFO(get_logger(), "Updated stitched_roi_height_percent to: %.3f", param.as_double());
-      continue;
-    } else if (param.get_name() == "use_flat_field") {
-      use_flat_field_ = param.as_bool();
-      //RCLCPP_INFO(get_logger(), "Updated use_flat_field to: %s", use_flat_field_ ? "true" : "false");
-      continue;
-    } else if (param.get_name() == "enable_blending") {
-      enable_blending_ = param.as_bool();
-      //RCLCPP_INFO(get_logger(), "Updated enable_blending to: %s", enable_blending_ ? "true" : "false");
-      continue;
-    } else if (param.get_name() == "blend_strength") {
-      blend_strength_ = param.as_double();
-      //RCLCPP_INFO(get_logger(), "Updated blend_strength to: %.3f", blend_strength_);
-      continue;
-    } else if (param.get_name() == "blend_mode") {
-      blend_mode_ = param.as_string();
-      //RCLCPP_INFO(get_logger(), "Updated blend_mode to: %s", blend_mode_.c_str());
-      continue;
-    } else if (param.get_name() == "blend_feather_size") {
-      blend_feather_size_ = param.as_int();
-      //RCLCPP_INFO(get_logger(), "Updated blend_feather_size to: %d", blend_feather_size_);
-      continue;
-    } else if (param.get_name() == "blend_overlap_priority") {
-      blend_overlap_priority_ = param.as_string();
-      //RCLCPP_INFO(get_logger(), "Updated blend_overlap_priority to: %s", blend_overlap_priority_.c_str());
-      continue;
-    } else if (param.get_name() == "blend_priority_strength") {
-      blend_priority_strength_ = param.as_double();
-      //RCLCPP_INFO(get_logger(), "Updated blend_priority_strength to: %.3f", blend_priority_strength_);
-      continue;
-    } else if (param.get_name() == "blend_gamma_correction") {
-      blend_gamma_correction_ = param.as_double();
-      //RCLCPP_INFO(get_logger(), "Updated blend_gamma_correction to: %.3f", blend_gamma_correction_);
-      continue;
-    } else if (param.get_name() == "publish_individual_roi") {
-      publish_individual_roi_ = param.as_bool();
-      //RCLCPP_INFO(get_logger(), "Updated publish_individual_roi to: %s", publish_individual_roi_ ? "true" : "false");
+    try {
+      if (param.get_name() == "enable_stitching") {
+        enable_stitching_ = param.as_bool();
+        RCLCPP_INFO(get_logger(), "Updated enable_stitching to: %s", enable_stitching_ ? "true" : "false");
+      } else if (param.get_name() == "publish_individual_images") {
+        publish_individual_images_ = param.as_bool();
+        setup_publishers();
+        RCLCPP_INFO(get_logger(), "Updated publish_individual_images to: %s", publish_individual_images_ ? "true" : "false");
+      } else if (param.get_name() == "use_flat_field") {
+        use_flat_field_ = param.as_bool();
+        RCLCPP_INFO(get_logger(), "Updated use_flat_field to: %s", use_flat_field_ ? "true" : "false");
+      } else if (param.get_name() == "enable_blending") {
+        enable_blending_ = param.as_bool();
+        RCLCPP_INFO(get_logger(), "Updated enable_blending to: %s", enable_blending_ ? "true" : "false");
+      } else if (param.get_name() == "blend_strength") {
+        blend_strength_ = param.as_double();
+        RCLCPP_INFO(get_logger(), "Updated blend_strength to: %.3f", blend_strength_);
+      } else if (param.get_name() == "blend_mode") {
+        blend_mode_ = param.as_string();
+        RCLCPP_INFO(get_logger(), "Updated blend_mode to: %s", blend_mode_.c_str());
+      } else if (param.get_name() == "blend_feather_size") {
+        blend_feather_size_ = param.as_int();
+        RCLCPP_INFO(get_logger(), "Updated blend_feather_size to: %d", blend_feather_size_);
+      } else if (param.get_name() == "blend_overlap_priority") {
+        blend_overlap_priority_ = param.as_string();
+        RCLCPP_INFO(get_logger(), "Updated blend_overlap_priority to: %s", blend_overlap_priority_.c_str());
+      } else if (param.get_name() == "blend_priority_strength") {
+        blend_priority_strength_ = param.as_double();
+        RCLCPP_INFO(get_logger(), "Updated blend_priority_strength to: %.3f", blend_priority_strength_);
+      } else if (param.get_name() == "blend_gamma_correction") {
+        blend_gamma_correction_ = param.as_double();
+        RCLCPP_INFO(get_logger(), "Updated blend_gamma_correction to: %.3f", blend_gamma_correction_);
+      } else if (param.get_name() == "publish_individual_roi") {
+        publish_individual_roi_ = param.as_bool();
+        RCLCPP_INFO(get_logger(), "Updated publish_individual_roi to: %s", publish_individual_roi_ ? "true" : "false");
+      }
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(get_logger(), "Error updating parameter %s: %s", param.get_name().c_str(), e.what());
+      result.successful = false;
+      result.reason = "Parameter update failed: " + std::string(e.what());
+      return result;
     }
-    // 其他ROI相关参数处理可以在这里添加
+  }
+  
+  if (result.successful) {
+    result.successful = true;
   }
   
   return result;
@@ -454,10 +387,10 @@ cv::Mat CameraStitchingNode::warp_and_stitch(const cv::Mat& img_left, const cv::
 
 cv::Mat CameraStitchingNode::apply_roi_crop(const cv::Mat& image, const cv::Rect& roi) {
   if (roi.width <= 0 || roi.height <= 0) {
-    return image;  // 无效ROI，返回原图
+    RCLCPP_WARN(get_logger(), "Invalid ROI dimensions: %dx%d", roi.width, roi.height);
+    return image;  
   }
   
-  // 确保ROI在图像范围内
   cv::Rect safe_roi = roi & cv::Rect(0, 0, image.cols, image.rows);
   
   if (safe_roi.area() <= 0) {
@@ -476,7 +409,6 @@ cv::Rect CameraStitchingNode::calculate_roi_from_percent(int image_width, int im
   int width = static_cast<int>(image_width * width_percent);
   int height = static_cast<int>(image_height * height_percent);
   
-  // 确保ROI在有效范围内
   x = std::max(0, std::min(x, image_width - 1));
   y = std::max(0, std::min(y, image_height - 1));
   width = std::max(1, std::min(width, image_width - x));
@@ -487,12 +419,11 @@ cv::Rect CameraStitchingNode::calculate_roi_from_percent(int image_width, int im
 
 void CameraStitchingNode::process_and_publish_images() {
   if (processing_active_.load()) {
-    return;  // 避免重入
+    return;  
   }
   
   processing_active_.store(true);
-  
-  // 获取图像
+
   std::vector<cv::Mat> images(cam_mgr_.numCameras());
   bool all_images_valid = true;
   
@@ -579,8 +510,8 @@ void CameraStitchingNode::process_and_publish_images() {
       all_corners_full.insert(all_corners_full.end(), corners_right_trans_full.begin(), corners_right_trans_full.end());
       cv::Rect canvas_rect = cv::boundingRect(all_corners_full);
       cv::Point2f canvas_translation(-canvas_rect.x, -canvas_rect.y);
-      
-      // 第二步：计算左右相机ROI
+    
+
       cv::Rect left_roi = calculate_roi_from_percent(
         original_images[0].cols, original_images[0].rows,
         get_parameter("left_roi_x_percent").as_double(),
@@ -597,50 +528,47 @@ void CameraStitchingNode::process_and_publish_images() {
         get_parameter("right_roi_height_percent").as_double()
       );
       
-      // 第三步：应用ROI裁剪
       cv::Mat img_left = apply_roi_crop(original_images[0], left_roi);
       cv::Mat img_right = apply_roi_crop(original_images[1], right_roi);
-      
-      // 第四步：在固定画布上进行拼接
-      // 创建固定尺寸的画布
+    
       cv::Mat canvas = cv::Mat::zeros(canvas_rect.size(), img_left.type());
       
-      // 左图直接放置在画布上（考虑ROI偏移）
       cv::Rect left_rect_on_canvas(
         static_cast<int>(canvas_translation.x + left_roi.x),
         static_cast<int>(canvas_translation.y + left_roi.y),
         img_left.cols,
         img_left.rows
       );
-      img_left.copyTo(canvas(left_rect_on_canvas));
       
-      // 右图通过homography变换放置在画布上
+      if (left_rect_on_canvas.x >= 0 && left_rect_on_canvas.y >= 0 && 
+          left_rect_on_canvas.x + left_rect_on_canvas.width <= canvas.cols &&
+          left_rect_on_canvas.y + left_rect_on_canvas.height <= canvas.rows) {
+        img_left.copyTo(canvas(left_rect_on_canvas));
+      } else {
+        RCLCPP_ERROR(get_logger(), "Left image rectangle is outside canvas bounds!");
+      }
+      
       cv::Mat H_canvas = (cv::Mat_<double>(3,3) << 1, 0, canvas_translation.x, 0, 1, canvas_translation.y, 0, 0, 1) * homography_matrix_;
       
-      // 为右图ROI创建变换矩阵
       cv::Mat T_right_roi = (cv::Mat_<double>(3,3) << 1, 0, right_roi.x, 0, 1, right_roi.y, 0, 0, 1);
       cv::Mat H_right_roi = H_canvas * T_right_roi;
       
-      // 变换右图并融合到画布 - 使用白色背景避免黑色三角形
       cv::Mat warped_right;
       cv::warpPerspective(img_right, warped_right, H_right_roi, canvas.size(), 
                          cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(255, 255, 255));
       
-      // 创建右图掩码
       cv::Mat mask_right = cv::Mat::zeros(canvas.size(), CV_8UC1);
       cv::Mat temp_mask = cv::Mat::ones(img_right.size(), CV_8UC1) * 255;
       cv::warpPerspective(temp_mask, mask_right, H_right_roi, canvas.size());
       
-      // 创建左图掩码
       cv::Mat mask_left = cv::Mat::zeros(canvas.size(), CV_8UC1);
       mask_left(left_rect_on_canvas) = 255;
       
-      // 使用改进的融合算法，支持优先级控制
+      cv::Mat canvas_before_blend = canvas.clone();
       canvas = blend_images_advanced(canvas, warped_right, mask_left, mask_right, left_rect_on_canvas);
       
       cv::Mat stitched = canvas;
       
-      // 平场校正
       if (use_flat_field_) {
         if (!flat_left_.empty() && img_left.size() == flat_left_.size()) {
           img_left = correct_flat(img_left, flat_left_);
@@ -650,7 +578,6 @@ void CameraStitchingNode::process_and_publish_images() {
         }
       }
       
-      // 应用拼接后ROI裁剪
       cv::Rect stitched_roi = calculate_roi_from_percent(
         stitched.cols, stitched.rows,
         get_parameter("stitched_roi_x_percent").as_double(),
@@ -661,14 +588,10 @@ void CameraStitchingNode::process_and_publish_images() {
       
       cv::Mat final_stitched = apply_roi_crop(stitched, stitched_roi);
       
-      // 创建调试图像
       debug_result_ = stitched.clone();
       
-      // 在调试图像上绘制边界框（基于固定画布和ROI）
-      // 绘制左相机ROI边界
       cv::rectangle(debug_result_, left_rect_on_canvas, cv::Scalar(0, 255, 0), 3);
       
-      // 绘制右相机变换后的边界
       int h_right = img_right.rows, w_right = img_right.cols;
       std::vector<cv::Point2f> corners_right = {{0, 0}, {static_cast<float>(w_right), 0}, 
                                                {static_cast<float>(w_right), static_cast<float>(h_right)}, 
@@ -682,24 +605,72 @@ void CameraStitchingNode::process_and_publish_images() {
       }
       cv::polylines(debug_result_, int_corners, true, cv::Scalar(0, 0, 255), 3);
       
-      // 绘制拼接后ROI边界
       cv::rectangle(debug_result_, stitched_roi, cv::Scalar(255, 0, 255), 2);
       
-      // 发布拼接图像
       std_msgs::msg::Header header;
       header.stamp = current_time;
-      auto stitched_msg = cv_bridge::CvImage(header, "bgr8", final_stitched).toImageMsg();
-      auto debug_msg = cv_bridge::CvImage(header, "bgr8", debug_result_).toImageMsg();
+      
+      cv::Mat final_stitched_continuous;
+      if (!final_stitched.isContinuous()) {
+        final_stitched_continuous = final_stitched.clone();
+      } else {
+        final_stitched_continuous = final_stitched;
+      }
+      
+      cv::Mat final_stitched_bgr;
+      if (final_stitched_continuous.channels() == 1) {
+        cv::cvtColor(final_stitched_continuous, final_stitched_bgr, cv::COLOR_GRAY2BGR);
+      } else if (final_stitched_continuous.channels() == 3) {
+        final_stitched_bgr = final_stitched_continuous;
+      } else {
+        RCLCPP_ERROR(get_logger(), "Unexpected number of channels: %d", final_stitched_continuous.channels());
+        return;
+      }
+      
+      if (final_stitched_bgr.depth() != CV_8U) {
+        cv::Mat final_stitched_8u;
+        final_stitched_bgr.convertTo(final_stitched_8u, CV_8U);
+        final_stitched_bgr = final_stitched_8u;
+      }
+      
+      auto stitched_msg = cv_bridge::CvImage(header, "bgr8", final_stitched_bgr).toImageMsg();
+      
+      cv::Mat debug_result_continuous;
+      if (!debug_result_.isContinuous()) {
+        debug_result_continuous = debug_result_.clone();
+      } else {
+        debug_result_continuous = debug_result_;
+      }
+      
+      cv::Mat debug_result_bgr;
+      if (debug_result_continuous.channels() == 1) {
+        cv::cvtColor(debug_result_continuous, debug_result_bgr, cv::COLOR_GRAY2BGR);
+      } else if (debug_result_continuous.channels() == 3) {
+        debug_result_bgr = debug_result_continuous;
+      } else {
+        RCLCPP_ERROR(get_logger(), "Unexpected number of channels in debug image: %d", debug_result_continuous.channels());
+        return;
+      }
+      
+      if (debug_result_bgr.depth() != CV_8U) {
+        cv::Mat debug_result_8u;
+        debug_result_bgr.convertTo(debug_result_8u, CV_8U);
+        debug_result_bgr = debug_result_8u;
+      }
+      
+      auto debug_msg = cv_bridge::CvImage(header, "bgr8", debug_result_bgr).toImageMsg();
       
       stitched_pub_->publish(*stitched_msg);
       debug_pub_->publish(*debug_msg);
       
     } catch (const std::exception& e) {
       RCLCPP_ERROR(get_logger(), "Stitching error: %s", e.what());
+    } catch (...) {
+      RCLCPP_ERROR(get_logger(), "Unknown stitching error occurred");
     }
-  }
-  
+
   processing_active_.store(false);
+}
 }
 
 cv::Mat CameraStitchingNode::blend_images_advanced(const cv::Mat& canvas, const cv::Mat& warped_right, 
@@ -707,7 +678,6 @@ cv::Mat CameraStitchingNode::blend_images_advanced(const cv::Mat& canvas, const 
                                                    const cv::Rect& /* left_rect_on_canvas */) {
   cv::Mat result = canvas.clone();
   
-  // 应用伽马校正
   cv::Mat corrected_canvas = result;
   cv::Mat corrected_warped = warped_right;
   if (blend_gamma_correction_ != 1.0) {
