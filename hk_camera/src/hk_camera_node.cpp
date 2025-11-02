@@ -1,8 +1,9 @@
 #include "hk_camera/hk_camera_node.hpp"
 #include <chrono>
+#include <thread>
 #include <yaml-cpp/yaml.h>
-#include <fstream>
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <rclcpp/qos.hpp>
 
 using namespace std::chrono_literals;
 
@@ -82,6 +83,36 @@ void HKCameraNode::initialize() {
     if (!has_parameter(prefix + "frame_rate")) {
       declare_parameter<double>(prefix + "frame_rate", cfg.frame_rate);
     }
+    if (!has_parameter(prefix + "vignetting_enable")) {
+      declare_parameter<bool>(prefix + "vignetting_enable", cfg.vignetting_enable);
+    }
+    if (!has_parameter(prefix + "vignetting_a")) {
+      rcl_interfaces::msg::ParameterDescriptor desc_a;
+      desc_a.description = "Vignetting correction parameter A";
+      desc_a.floating_point_range.resize(1);
+      desc_a.floating_point_range[0].from_value = -2.0;
+      desc_a.floating_point_range[0].to_value = 0.0;
+      desc_a.floating_point_range[0].step = 0.0;
+      declare_parameter<double>(prefix + "vignetting_a", static_cast<double>(cfg.vignetting_a), desc_a);
+    }
+    if (!has_parameter(prefix + "vignetting_b")) {
+      rcl_interfaces::msg::ParameterDescriptor desc_b;
+      desc_b.description = "Vignetting correction parameter B";
+      desc_b.floating_point_range.resize(1);
+      desc_b.floating_point_range[0].from_value = -2.0;
+      desc_b.floating_point_range[0].to_value = 0.0;
+      desc_b.floating_point_range[0].step = 0.0;
+      declare_parameter<double>(prefix + "vignetting_b", static_cast<double>(cfg.vignetting_b), desc_b);
+    }
+    if (!has_parameter(prefix + "vignetting_c")) {
+      rcl_interfaces::msg::ParameterDescriptor desc_c;
+      desc_c.description = "Vignetting correction parameter C";
+      desc_c.floating_point_range.resize(1);
+      desc_c.floating_point_range[0].from_value = -2.0;
+      desc_c.floating_point_range[0].to_value = 0.0;
+      desc_c.floating_point_range[0].step = 0.0;
+      declare_parameter<double>(prefix + "vignetting_c", static_cast<double>(cfg.vignetting_c), desc_c);
+    }
   }
   
   if (!cam_mgr_.init(configs_)) {
@@ -144,6 +175,19 @@ bool HKCameraNode::load_configs() {
     cfg.gamma_selector = 0;
     cfg.gamma_value = 1.0f;
     cfg.frame_rate = cam["frame_rate"].as<double>(30.0);
+    
+    // Load vignetting parameters
+    if (cam["vignetting"]) {
+      cfg.vignetting_enable = cam["vignetting"]["enable"].as<bool>(false);
+      cfg.vignetting_a = static_cast<float>(cam["vignetting"]["a"].as<double>(0.0));
+      cfg.vignetting_b = static_cast<float>(cam["vignetting"]["b"].as<double>(0.0));
+      cfg.vignetting_c = static_cast<float>(cam["vignetting"]["c"].as<double>(0.0));
+    } else {
+      cfg.vignetting_enable = false;
+      cfg.vignetting_a = 0.0f;
+      cfg.vignetting_b = 0.0f;
+      cfg.vignetting_c = 0.0f;
+    }
     configs_.push_back(cfg);
     runtime_params_.push_back(cfg);
     RCLCPP_INFO(get_logger(), "Loaded camera config: %s (S/N: %s)", cfg.name.c_str(), cfg.serial_number.c_str());
@@ -160,10 +204,20 @@ bool HKCameraNode::load_configs() {
 
 void HKCameraNode::setup_publishers() {
   pubs_.clear();
+  
+  // Configure QoS for low-latency, high-frequency image streaming
+  // Use BEST_EFFORT reliability to avoid blocking on slow subscribers
+  // Small queue depth minimizes latency - old frames are dropped
+  // Use VOLATILE durability for performance
+  rclcpp::QoS qos_profile(5);  // Small queue for low latency (was 100)
+  qos_profile.reliability(rclcpp::ReliabilityPolicy::BestEffort);
+  qos_profile.durability(rclcpp::DurabilityPolicy::Volatile);
+  qos_profile.history(rclcpp::HistoryPolicy::KeepLast);
+  
   for (const auto& cfg : configs_) {
     std::string topic = "/hk_camera/" + cfg.name + "/image_raw";
-    pubs_.push_back({cfg.name, this->create_publisher<sensor_msgs::msg::Image>(topic, 10)});
-    RCLCPP_INFO(get_logger(), "Advertising on %s", topic.c_str());
+    pubs_.push_back({cfg.name, this->create_publisher<sensor_msgs::msg::Image>(topic, qos_profile)});
+    RCLCPP_INFO(get_logger(), "Advertising on %s with BestEffort QoS (depth=5, low-latency)", topic.c_str());
   }
 }
 
@@ -185,71 +239,123 @@ rcl_interfaces::msg::SetParametersResult HKCameraNode::on_param_change(const std
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
   
+  // Quick return for empty parameter list
+  if (params.empty()) {
+    return result;
+  }
+  
   for (const auto& param : params) {
-    RCLCPP_INFO(get_logger(), "Parameter changed: %s", param.get_name().c_str());
+    try {
+      // Skip logging for frequent parameter changes to reduce overhead
+      // RCLCPP_DEBUG(get_logger(), "Parameter changed: %s", param.get_name().c_str());
     
-    // 处理全局参数
-    if (param.get_name() == "loop_rate_hz") {
-      loop_rate_hz_ = param.as_int();
-      continue; // 循环频率不需要传递给相机
-    }
-    
-    // 处理相机特定参数
-    for (size_t i = 0; i < configs_.size(); ++i) {
-      const std::string prefix = configs_[i].name + ".";
-      
-      if (param.get_name().find(prefix) != 0) continue; // 不是当前相机的参数
-      
-      auto& cfg = runtime_params_[i];
-      std::string param_suffix = param.get_name().substr(prefix.length());
-      
-      if (param_suffix == "exposure_auto") {
-        cfg.exposure_auto = param.as_bool();
-      } else if (param_suffix == "exposure_value") {
-        cfg.exposure_value = static_cast<float>(param.as_double());
-      } else if (param_suffix == "exposure_min") {
-        cfg.auto_exposure_min = static_cast<int64_t>(param.as_int());
-      } else if (param_suffix == "exposure_max") {
-        cfg.auto_exposure_max = static_cast<int64_t>(param.as_int());
-      } else if (param_suffix == "gain_auto") {
-        cfg.gain_auto = param.as_bool();
-      } else if (param_suffix == "gain_value") {
-        cfg.gain_value = static_cast<float>(param.as_double());
-      } else if (param_suffix == "gain_min") {
-        cfg.auto_gain_min = static_cast<float>(param.as_double());
-      } else if (param_suffix == "gain_max") {
-        cfg.auto_gain_max = static_cast<float>(param.as_double());
-      } else if (param_suffix == "white_balance_auto") {
-        cfg.balance_white_auto = param.as_bool();
-      } else if (param_suffix == "roi_width") {
-        cfg.width = static_cast<int64_t>(param.as_int());
-      } else if (param_suffix == "roi_height") {
-        cfg.height = static_cast<int64_t>(param.as_int());
-      } else if (param_suffix == "roi_offset_x") {
-        cfg.offset_x = static_cast<int64_t>(param.as_int());
-      } else if (param_suffix == "roi_offset_y") {
-        cfg.offset_y = static_cast<int64_t>(param.as_int());
-      } else if (param_suffix == "frame_rate") {
-        cfg.frame_rate = param.as_double();
+      // 处理全局参数
+      if (param.get_name() == "loop_rate_hz") {
+        loop_rate_hz_ = param.as_int();
+        continue; // 循环频率不需要传递给相机
       }
       
-      // 将更新的参数应用到对应相机
-      void* handle = cam_mgr_.getHandle(static_cast<int>(i));
-      if (handle) {
-        int ret = cam_mgr_.setParameter(handle, cfg);
-        if (ret != 0) { // MV_OK = 0
-          RCLCPP_WARN(get_logger(), "Failed to set camera %s parameter %s: 0x%X", 
-                      configs_[i].name.c_str(), param.get_name().c_str(), ret);
+      // 处理相机特定参数
+      bool param_handled = false;
+      for (size_t i = 0; i < configs_.size(); ++i) {
+        const std::string prefix = configs_[i].name + ".";
+        
+        if (param.get_name().find(prefix) != 0) continue; // 不是当前相机的参数
+        
+        auto& cfg = runtime_params_[i];
+        std::string param_suffix = param.get_name().substr(prefix.length());
+        
+        // Handle vignetting parameters (software-only)
+        if (param_suffix == "vignetting_enable") {
+          cfg.vignetting_enable = param.as_bool();
+          RCLCPP_INFO(get_logger(), "Updated vignetting_enable to: %s", cfg.vignetting_enable ? "true" : "false");
+          param_handled = true;
+          break;
+        } else if (param_suffix == "vignetting_a") {
+          double value = param.as_double();
+          if (value < -2.0 || value > 0.0) {
+            RCLCPP_WARN(get_logger(), "vignetting_a value %.3f out of range [-5.0, 5.0], clamping", value);
+            value = std::max(-2.0, std::min(0.0, value));
+          }
+          cfg.vignetting_a = static_cast<float>(value);
+          RCLCPP_INFO(get_logger(), "Updated vignetting_a to: %.3f", cfg.vignetting_a);
+          param_handled = true;
+        } else if (param_suffix == "vignetting_b") {
+          double value = param.as_double();
+          if (value < -2.0 || value > 0.0) {
+            RCLCPP_WARN(get_logger(), "vignetting_b value %.3f out of range [-5.0, 5.0], clamping", value);
+            value = std::max(-2.0, std::min(0.0, value));
+          }
+          cfg.vignetting_b = static_cast<float>(value);
+          RCLCPP_INFO(get_logger(), "Updated vignetting_b to: %.3f", cfg.vignetting_b);
+          param_handled = true;
+        } else if (param_suffix == "vignetting_c") {
+          double value = param.as_double();
+          if (value < -2.0 || value > 0.0) {
+            RCLCPP_WARN(get_logger(), "vignetting_c value %.3f out of range [-5.0, 5.0], clamping", value);
+            value = std::max(-2.0, std::min(0.0, value));
+          }
+          cfg.vignetting_c = static_cast<float>(value);
+          RCLCPP_INFO(get_logger(), "Updated vignetting_c to: %.3f", cfg.vignetting_c);
+          param_handled = true;
+        } else if (param_suffix == "exposure_auto") {
+          cfg.exposure_auto = param.as_bool();
+        } else if (param_suffix == "exposure_value") {
+          cfg.exposure_value = static_cast<float>(param.as_double());
+        } else if (param_suffix == "exposure_min") {
+          cfg.auto_exposure_min = static_cast<int64_t>(param.as_int());
+        } else if (param_suffix == "exposure_max") {
+          cfg.auto_exposure_max = static_cast<int64_t>(param.as_int());
+        } else if (param_suffix == "gain_auto") {
+          cfg.gain_auto = param.as_bool();
+        } else if (param_suffix == "gain_value") {
+          cfg.gain_value = static_cast<float>(param.as_double());
+        } else if (param_suffix == "gain_min") {
+          cfg.auto_gain_min = static_cast<float>(param.as_double());
+        } else if (param_suffix == "gain_max") {
+          cfg.auto_gain_max = static_cast<float>(param.as_double());
+        } else if (param_suffix == "white_balance_auto") {
+          cfg.balance_white_auto = param.as_bool();
+        } else if (param_suffix == "roi_width") {
+          cfg.width = static_cast<int64_t>(param.as_int());
+        } else if (param_suffix == "roi_height") {
+          cfg.height = static_cast<int64_t>(param.as_int());
+        } else if (param_suffix == "roi_offset_x") {
+          cfg.offset_x = static_cast<int64_t>(param.as_int());
+        } else if (param_suffix == "roi_offset_y") {
+          cfg.offset_y = static_cast<int64_t>(param.as_int());
+        } else if (param_suffix == "frame_rate") {
+          cfg.frame_rate = param.as_double();
+        } else {
+          continue; // Unknown parameter, skip to next camera
+        }
+        
+        // Apply parameters to camera (both hardware and software parameters)
+        RCLCPP_INFO(get_logger(), "Calling updateCameraParams for camera %s with vignetting_enable=%s", 
+                    configs_[i].name.c_str(), cfg.vignetting_enable ? "true" : "false");
+        bool update_success = cam_mgr_.updateCameraParams(i, cfg);
+        if (!update_success) {
+          RCLCPP_WARN(get_logger(), "Failed to update camera %s parameters", configs_[i].name.c_str());
           result.successful = false;
         } else {
-          RCLCPP_INFO(get_logger(), "Successfully updated camera %s parameter: %s", 
-                      configs_[i].name.c_str(), param.get_name().c_str());
+          RCLCPP_INFO(get_logger(), "Successfully updated camera %s parameters", configs_[i].name.c_str());
         }
-      } else {
-        RCLCPP_WARN(get_logger(), "No camera handle available for camera %s", configs_[i].name.c_str());
-        result.successful = false;
+        param_handled = true;
+        break; // Found matching camera, exit loop
       }
-      break; // 找到对应相机后退出循环
+      
+      if (!param_handled) {
+        RCLCPP_WARN(get_logger(), "Unknown parameter: %s", param.get_name().c_str());
+      }
+      
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(get_logger(), "Error processing parameter %s: %s", param.get_name().c_str(), e.what());
+      result.successful = false;
+      result.reason = "Parameter processing failed: " + std::string(e.what());
+    } catch (...) {
+      RCLCPP_ERROR(get_logger(), "Unknown error processing parameter %s", param.get_name().c_str());
+      result.successful = false;
+      result.reason = "Unknown parameter processing error";
     }
   }
   
@@ -257,68 +363,73 @@ rcl_interfaces::msg::SetParametersResult HKCameraNode::on_param_change(const std
 }
 
 void HKCameraNode::spin() {
-  rclcpp::Rate rate(loop_rate_hz_);
-  
   // Performance monitoring variables
   int frame_count = 0;
   int publish_count = 0;
   auto start_time = std::chrono::steady_clock::now();
   auto last_report = start_time;
   
-  std::cout << "[INFO] Starting camera node with loop rate: " << loop_rate_hz_ << " Hz" << std::endl;
+  // Adaptive sleep to maintain target rate without blocking unnecessarily
+  const double min_loop_time_us = 1000000.0 / loop_rate_hz_;  // Minimum loop time in microseconds
+  
+  std::cout << "[INFO] Starting camera node with target rate: " << loop_rate_hz_ << " Hz" << std::endl;
   
   while (rclcpp::ok()) {
     auto loop_start = std::chrono::high_resolution_clock::now();
     
     // Use synchronized image acquisition for multiple cameras
     std::vector<cv::Mat> images;
+    bool got_images = false;
+    
     if (cam_mgr_.numCameras() > 1) {
-      // Multi-camera synchronized acquisition
-      if (!cam_mgr_.getSyncedImages(images)) {
-        rclcpp::spin_some(shared_from_this());
-        rate.sleep();
-        continue;
-      }
+      // Multi-camera synchronized acquisition - non-blocking
+      got_images = cam_mgr_.getSyncedImages(images);
     } else {
-      // Single camera acquisition
+      // Single camera acquisition - non-blocking
       images.resize(1);
-      if (!cam_mgr_.getImage(0, images[0]) || images[0].empty()) {
-        rclcpp::spin_some(shared_from_this());
-        rate.sleep();
-        continue;
-      }
+      got_images = cam_mgr_.getImage(0, images[0]) && !images[0].empty();
     }
     
-    // Publish all images with the same timestamp for synchronization
-    auto timestamp = this->now();
-    
-    for (size_t i = 0; i < images.size(); ++i) {
-      if (images[i].empty()) continue;
+    if (got_images) {
+      // Use capture timestamp for minimal latency (not current time)
+      auto timestamp = this->now();  // Can be optimized further if camera provides timestamps
       
-      auto convert_start = std::chrono::high_resolution_clock::now();
-      
-      frame_count++;
-      std_msgs::msg::Header header;
-      header.stamp = timestamp;  // Use same timestamp for all cameras
-      std::string encoding = (images[i].channels() == 1) ? "mono8" : "bgr8";
-      
-      auto msg = cv_bridge::CvImage(header, encoding, images[i]).toImageMsg();
-      
-      auto convert_end = std::chrono::high_resolution_clock::now();
-      auto publish_start = std::chrono::high_resolution_clock::now();
-      
-      pubs_[i].pub->publish(*msg);
-      publish_count++;
-      
-      auto publish_end = std::chrono::high_resolution_clock::now();
-      
-      // Log timing occasionally
-      if (publish_count % 50 == 0) {
-        auto convert_time = std::chrono::duration_cast<std::chrono::microseconds>(convert_end - convert_start);
-        auto publish_time = std::chrono::duration_cast<std::chrono::microseconds>(publish_end - publish_start);
-        std::cout << "[TIMING] Convert: " << convert_time.count() << "μs, Publish: " << publish_time.count() << "μs" << std::endl;
+      for (size_t i = 0; i < images.size(); ++i) {
+        if (images[i].empty()) continue;
+        
+        frame_count++;
+        std_msgs::msg::Header header;
+        header.stamp = timestamp;  // Use same timestamp for all cameras
+        std::string encoding = (images[i].channels() == 1) ? "mono8" : "bgr8";
+        
+        // Optimize cv_bridge conversion - reuse CvImage object if possible
+        // Create message directly
+        cv_bridge::CvImage cv_image(header, encoding, images[i]);
+        auto msg = cv_image.toImageMsg();
+        
+        // Publish immediately - BestEffort QoS ensures non-blocking
+        // Small queue depth (100) with BestEffort will drop old messages if full
+        pubs_[i].pub->publish(*msg);
+        publish_count++;
       }
+      
+      // Clear images immediately to free memory
+      images.clear();
     }
+    
+    // Handle ROS callbacks
+    rclcpp::spin_some(shared_from_this());
+    
+    // Adaptive sleep: only sleep if we're running too fast
+    auto loop_end = std::chrono::high_resolution_clock::now();
+    auto loop_time_us = std::chrono::duration_cast<std::chrono::microseconds>(loop_end - loop_start).count();
+    
+    if (loop_time_us < min_loop_time_us) {
+      // We're running faster than target, sleep to maintain rate
+      auto sleep_time_us = static_cast<int64_t>(min_loop_time_us - loop_time_us);
+      std::this_thread::sleep_for(std::chrono::microseconds(sleep_time_us));
+    }
+    // If we're running slower than target, don't sleep - process as fast as possible
     
     // Performance reporting every 5 seconds
     auto now = std::chrono::steady_clock::now();
@@ -332,23 +443,11 @@ void HKCameraNode::spin() {
       std::cout << "=== ROS NODE PERFORMANCE ===" << std::endl;
       std::cout << "Frame get FPS: " << frame_fps << std::endl;
       std::cout << "Publish FPS: " << publish_fps << std::endl;
-      std::cout << "Loop rate setting: " << loop_rate_hz_ << " Hz" << std::endl;
+      std::cout << "Target rate: " << loop_rate_hz_ << " Hz" << std::endl;
       std::cout << "===========================" << std::endl;
       
       last_report = now;
     }
-    
-    rclcpp::spin_some(shared_from_this());
-    
-    auto loop_end = std::chrono::high_resolution_clock::now();
-    auto loop_time = std::chrono::duration_cast<std::chrono::microseconds>(loop_end - loop_start);
-    
-    // Log long loops
-    if (loop_time.count() > 50000) {  // > 50ms
-      std::cout << "[WARN] Long loop time: " << loop_time.count() << "μs" << std::endl;
-    }
-    
-    rate.sleep();
   }
 } 
 

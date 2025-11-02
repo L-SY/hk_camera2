@@ -63,9 +63,13 @@ class DualCameraCalibration(Node):
         self.ret_r = False
 
         # 多张变换矩阵列表及平均矩阵
-        self.Hs = []
+        self.Hs = []  # 存储单应矩阵
+        self.reproj_errors = []  # 存储对应的重投影误差
         self.H_avg = None
         self.active = True  # 标志节点是否活跃
+        
+        # 标定质量阈值
+        self.max_reproj_error = 2.0  # 最大重投影误差（像素）
 
         # Terminal 设置，用于捕获键盘输入
         self.old_term = termios.tcgetattr(sys.stdin)
@@ -137,15 +141,23 @@ class DualCameraCalibration(Node):
             self.get_logger().error(f"Error during conversion: {e}")
             return False
 
-    # 边缘模糊 + 简单二值化预处理：CLAHE -> 双边滤波 -> 全局阈值
+    # 边缘模糊 + 简单二值化预处理：CLAHE -> 双边滤波 -> 自适应阈值
     def preprocess(self, gray):
         # 自适应直方图均衡化
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         eq = clahe.apply(gray)
         # 双边滤波保留边缘
         blurred = cv2.bilateralFilter(eq, d=9, sigmaColor=75, sigmaSpace=75)
-        # 简单二值化，阈值设为128
-        _, binary = cv2.threshold(blurred, 40, 255, cv2.THRESH_BINARY)
+        # 自适应阈值：使用OTSU或局部阈值，适应不同光照条件
+        # 先尝试OTSU自动阈值
+        otsu_thresh, binary_otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # 如果OTSU阈值太低（可能因为图像太暗），使用自适应局部阈值作为备选
+        if otsu_thresh < 30:
+            # 图像可能较暗，使用自适应局部阈值
+            binary = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                          cv2.THRESH_BINARY, 11, 2)
+        else:
+            binary = binary_otsu
         return binary
 
     # 角点可视化并发布
@@ -201,6 +213,14 @@ class DualCameraCalibration(Node):
         # 棋盘格角点检测
         self.ret_l, self.corners_left = cv2.findChessboardCorners(proc_l, self.PATTERN_SIZE, self.FLAGS)
         self.ret_r, self.corners_right = cv2.findChessboardCorners(proc_r, self.PATTERN_SIZE, self.FLAGS)
+        
+        # 亚像素细化，提高角点精度
+        if self.ret_l and self.corners_left is not None:
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+            self.corners_left = cv2.cornerSubPix(gray_l, self.corners_left, (11, 11), (-1, -1), criteria)
+        if self.ret_r and self.corners_right is not None:
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+            self.corners_right = cv2.cornerSubPix(gray_r, self.corners_right, (11, 11), (-1, -1), criteria)
 
         self.publish_corners(self.img_left, self.corners_left, self.ret_l, self.pub_left_corners)
         self.publish_corners(self.img_right, self.corners_right, self.ret_r, self.pub_right_corners)
@@ -220,10 +240,66 @@ class DualCameraCalibration(Node):
                 cv2.imwrite(os.path.join(self.SAVE_DIR, f"right_{idx}.png"), self.img_right)
                 self.get_logger().info(f"[SAVE] 图像对 {idx} 保存到 {self.SAVE_DIR}")
 
-                H, _ = cv2.findHomography(self.corners_right, self.corners_left)
+                # 使用RANSAC计算单应矩阵，提高鲁棒性
+                H, mask = cv2.findHomography(
+                    self.corners_right, self.corners_left,
+                    method=cv2.RANSAC,
+                    ransacReprojThreshold=3.0,
+                    confidence=0.99,
+                    maxIters=2000
+                )
+                
+                if H is None:
+                    self.get_logger().warn(f"[SKIP] 图像对 {idx} 单应矩阵计算失败，跳过")
+                    return
+                
+                # 计算重投影误差，评估标定质量
+                corners_right_flat = self.corners_right.reshape(-1, 2)
+                corners_left_flat = self.corners_left.reshape(-1, 2)
+                corners_right_homogeneous = np.hstack([corners_right_flat, np.ones((len(corners_right_flat), 1))])
+                corners_right_projected = (H @ corners_right_homogeneous.T).T
+                corners_right_projected = corners_right_projected[:, :2] / corners_right_projected[:, 2:3]
+                reproj_error = np.mean(np.linalg.norm(corners_left_flat - corners_right_projected, axis=1))
+                
+                self.get_logger().info(f"[QUALITY] 图像对 {idx} 重投影误差: {reproj_error:.3f} 像素")
+                
+                # 如果重投影误差过大，提示用户
+                if reproj_error > self.max_reproj_error:
+                    self.get_logger().warn(f"[WARN] 图像对 {idx} 重投影误差较大 ({reproj_error:.3f} > {self.max_reproj_error})，建议重新采集")
+                    # 仍然保存，但提示用户
+                
                 self.Hs.append(H)
-                self.H_avg = np.mean(np.stack(self.Hs), axis=0)
-                self.get_logger().info(f"[CALC] 新单应加入，共 {len(self.Hs)} 张，已更新平均 H")
+                self.reproj_errors.append(reproj_error)
+                
+                # 改进的平均方法：使用加权平均，质量好的样本权重更大
+                if len(self.Hs) == 1:
+                    self.H_avg = H.copy()
+                else:
+                    # 计算权重：重投影误差越小，权重越大
+                    # 使用倒数作为权重，但避免除零
+                    weights = [1.0 / max(err, 0.1) for err in self.reproj_errors]
+                    
+                    # 归一化权重
+                    total_weight = sum(weights)
+                    if total_weight > 0:
+                        weights = [w / total_weight for w in weights]
+                    else:
+                        weights = [1.0 / len(weights)] * len(weights)
+                    
+                    # 加权平均
+                    self.H_avg = np.zeros_like(H)
+                    for H_temp, w in zip(self.Hs, weights):
+                        self.H_avg += w * H_temp
+                    
+                    # 归一化最后一行（保持齐次坐标性质）
+                    if abs(self.H_avg[2, 2]) > 1e-10:
+                        self.H_avg = self.H_avg / self.H_avg[2, 2]
+                    else:
+                        self.get_logger().warn("[WARN] 平均矩阵归一化失败，使用直接平均")
+                        self.H_avg = np.mean(np.stack(self.Hs), axis=0)
+                
+                avg_reproj_error = np.mean(self.reproj_errors)
+                self.get_logger().info(f"[CALC] 新单应加入，共 {len(self.Hs)} 张，平均重投影误差: {avg_reproj_error:.3f} 像素")
 
             elif c == 'q':
                 if self.H_avg is not None:

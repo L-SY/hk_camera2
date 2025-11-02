@@ -42,6 +42,12 @@ struct CameraParams {
   
   // Frame rate for trigger control
   double frame_rate = 90.0;
+  
+  // Vignetting correction parameters
+  bool vignetting_enable = false;
+  float vignetting_a = 0.0f;
+  float vignetting_b = 0.0f;
+  float vignetting_c = 0.0f;
 };
 
 class CameraManager {
@@ -60,6 +66,9 @@ public:
   void *getHandle(size_t index) const;
   int setParameter(void *dev_handle_, CameraParams &config);
   void adaptTriggerFrequency();
+  
+  // Update camera parameters at runtime
+  bool updateCameraParams(size_t camera_index, const CameraParams& new_params);
 
 private:
   struct CameraContext {
@@ -111,4 +120,8 @@ private:
   bool doInit(const std::vector<CameraParams>& configs);
   bool waitForFrameSync(uint64_t target_frame);
   double getAverageFrameRate() const;
+  
+  // Vignetting correction functions
+  static cv::Mat generateVignettingMask(const cv::Size& size, float a, float b, float c);
+  static cv::Mat applyVignettingCorrection(const cv::Mat& image, float a, float b, float c);
 };

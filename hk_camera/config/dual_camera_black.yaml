@@ -19,6 +19,11 @@ cameras:
       height: 2048
       offset_x: 0
       offset_y: 0
+    vignetting:
+      enable: false
+      a: -0.50
+      b: -0.20
+      c: -0.10
     frame_rate: 90.0
 
   - name: right_camera
@@ -41,6 +46,11 @@ cameras:
       height: 2048
       offset_x: 0
       offset_y: 0
+    vignetting:
+      enable: false
+      a: -0.50
+      b: -0.20
+      c: -0.10
     frame_rate: 90.0
 
 loop_rate_hz: 90 

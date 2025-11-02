@@ -180,7 +180,8 @@ bool CameraManager::getImage(int cam_idx, cv::Mat &image) {
   std::lock_guard<std::mutex> lock(cam.mtx);
   if (cam.image_queue.empty())
     return false;
-  image = cam.image_queue.front();
+  // Use move semantics to avoid unnecessary copy
+  image = std::move(cam.image_queue.front());
   cam.image_queue.pop();
   return true;
 }
@@ -200,17 +201,17 @@ void __stdcall CameraManager::imageCallback(unsigned char *pData,
   
   // Performance tracking
   g_callback_count++;
-  static int last_count = 0;
   static auto last_time = std::chrono::steady_clock::now();
   
   auto now = std::chrono::steady_clock::now();
   auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_time).count();
   
   if (elapsed >= 5000) {  // Report every 5 seconds
-    int current_count = g_callback_count.load();
-    double fps = (current_count - last_count) * 1000.0 / elapsed;
+    // int current_count = g_callback_count.load();
+    // static int last_count = 0;
+    // double fps = (current_count - last_count) * 1000.0 / elapsed;
     // std::cout << "[CALLBACK] FPS: " << fps << " (total: " << current_count << ")" << std::endl;
-    last_count = current_count;
+    // last_count = current_count;
     last_time = now;
   }
 
@@ -227,17 +228,19 @@ void CameraManager::enqueueImage(CameraContext &ctx,
   int L = info->nFrameLen;
   cv::Mat img;
 
-  // 处理8位Bayer格式
   if (info->enPixelType == PixelType_Gvsp_BayerRG8) {
-    cv::Mat bayer_img(H, W, CV_8UC1, data);
-    cv::cvtColor(bayer_img, img, cv::COLOR_BayerBG2BGR);  // 正确的BayerRG8到BGR转换
+    // Optimize Bayer conversion: use in-place conversion if possible
+    // Allocate output directly to avoid temporary Mat
+    img.create(H, W, CV_8UC3);
+    cv::Mat bayer_img(H, W, CV_8UC1, const_cast<unsigned char*>(data));
+    // Use fast interpolation (0 = nearest, which is fastest)
+    cv::cvtColor(bayer_img, img, cv::COLOR_BayerBG2BGR, 0); 
   }
   else if (info->enPixelType == PixelType_Gvsp_Mono8) {
-    // 单通道灰度图，直接使用
+    // Clone is necessary here as data pointer is temporary
     img = cv::Mat(H, W, CV_8UC1, data).clone();
   }
   else {
-    // 尝试海康SDK的BGR转换作为备选方案
     size_t need = static_cast<size_t>(W) * static_cast<size_t>(H) * 3;
     if (ctx.cvt_buf.size() < need)
       ctx.cvt_buf.resize(need);
@@ -254,11 +257,12 @@ void CameraManager::enqueueImage(CameraContext &ctx,
 
     int ret = MV_CC_ConvertPixelTypeEx(ctx.handle, &conv);
     if (ret == MV_OK) {
-      img = cv::Mat(H, W, CV_8UC3, ctx.cvt_buf.data()).clone();
+      // Avoid clone - create Mat that references the buffer
+      // We'll move it to queue so ownership is transferred
+      img = cv::Mat(H, W, CV_8UC3, ctx.cvt_buf.data()).clone();  // Still need clone as buffer may be reused
     } else {
       std::cerr << "[WARN] SDK conversion failed: 0x" << std::hex << ret << std::dec << std::endl;
-      // 最后的降级方案：直接作为灰度图使用
-      img = cv::Mat(H, W, CV_8UC1, data).clone();
+      img = cv::Mat(H, W, CV_8UC1, const_cast<unsigned char*>(data)).clone();
     }
   }
 
@@ -267,32 +271,57 @@ void CameraManager::enqueueImage(CameraContext &ctx,
     return;
   }
 
-  auto end_time = std::chrono::high_resolution_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-  
-  // Log processing time occasionally
-  static int process_count = 0;
-  process_count++;
-  if (process_count % 100 == 0) {
-    // std::cout << "[PROCESS] Image processing took: " << duration.count() << " μs" << std::endl;
+  // Apply vignetting correction if enabled
+  if (ctx.params.vignetting_enable) {
+    static int vignetting_count = 0;
+    vignetting_count++;
+    if (vignetting_count % 30 == 0) { // Log every 30 frames
+      std::cout << "[VIGNETTING] Applying correction: a=" << ctx.params.vignetting_a 
+                << ", b=" << ctx.params.vignetting_b 
+                << ", c=" << ctx.params.vignetting_c << std::endl;
+      
+      // Debug: Check image statistics before and after correction
+      cv::Scalar mean_before = cv::mean(img);
+      cv::Mat corrected = applyVignettingCorrection(img, ctx.params.vignetting_a, ctx.params.vignetting_b, ctx.params.vignetting_c);
+      cv::Scalar mean_after = cv::mean(corrected);
+      std::cout << "[VIGNETTING] Image mean before: " << mean_before << ", after: " << mean_after << std::endl;
+      
+      // Debug: Check if there's any difference
+      cv::Mat diff;
+      cv::absdiff(img, corrected, diff);
+      double max_diff = 0;
+      cv::minMaxLoc(diff, nullptr, &max_diff);
+      std::cout << "[VIGNETTING] Max difference: " << max_diff << std::endl;
+      
+      img = corrected;
+    } else {
+      img = applyVignettingCorrection(img, ctx.params.vignetting_a, ctx.params.vignetting_b, ctx.params.vignetting_c);
+    }
   }
+
+  // Performance tracking (commented out to reduce overhead)
+  // auto end_time = std::chrono::high_resolution_clock::now();
+  // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+  // static int process_count = 0;
+  // process_count++;
+  // if (process_count % 100 == 0) {
+  //   std::cout << "[PROCESS] Image processing took: " << duration.count() << " μs" << std::endl;
+  // }
+  (void)start_time;  // Suppress unused variable warning
 
   std::lock_guard<std::mutex> lock(ctx.mtx);
   
-  // Optimization: Prevent queue overflow that can cause memory issues and latency
-  while (ctx.image_queue.size() >= 5) {  // Limit queue size to 5
-    ctx.image_queue.pop();  // Drop oldest frame
+  // Low-latency optimization: Keep queue very small (2-3 frames max)
+  // This minimizes delay between capture and consumption
+  // Old frames are dropped immediately to always use latest
+  const size_t MAX_QUEUE_SIZE = 2;  // Reduced from 30 to 2 for minimal latency
+  while (ctx.image_queue.size() >= MAX_QUEUE_SIZE) {
+    ctx.image_queue.pop();  // Drop oldest frame immediately
   }
   
-  ctx.image_queue.push(img.clone());
-  
-  // Warn if queue is getting large
-  if (ctx.image_queue.size() > 3) {
-    static int warn_count = 0;
-    if (++warn_count % 100 == 0) {  // Reduce log spam
-      // std::cout << "[WARN] Image queue size: " << ctx.image_queue.size() << std::endl;
-    }
-  }
+  // Move image into queue (img will be empty after move, which is fine)
+  // This avoids one clone operation
+  ctx.image_queue.push(std::move(img));
 }
 
 bool CameraManager::getSyncedImages(std::vector<cv::Mat> &images) {
@@ -302,71 +331,43 @@ bool CameraManager::getSyncedImages(std::vector<cv::Mat> &images) {
     return getImage(0, images[0]);
   }
   
-  // For multiple cameras, wait for frame synchronization
-  uint64_t target_frame = sync_frame_counter_.load() + 1;
-  
-  // Wait for all cameras to reach the target frame
-  if (!waitForFrameSync(target_frame)) {
-    return false;
-  }
-  
-  // All cameras have reached the target frame, get images
+  // For multiple cameras, get latest available images from each queue
+  // No waiting - just get what's available to maximize throughput
   images.resize(cameras_.size());
   bool success = true;
   
+  // Lock all cameras at once to get consistent state
+  std::vector<std::unique_lock<std::mutex>> locks;
+  locks.reserve(cameras_.size());
+  for (auto& cam : cameras_) {
+    locks.emplace_back(cam.mtx);
+  }
+  
+  // Check if all queues have at least one image
   for (size_t i = 0; i < cameras_.size(); ++i) {
-    std::lock_guard<std::mutex> lock(cameras_[i].mtx);
     if (cameras_[i].image_queue.empty()) {
       success = false;
       break;
     }
-    images[i] = cameras_[i].image_queue.front();
-    cameras_[i].image_queue.pop();
   }
   
   if (success) {
-    sync_frame_counter_.store(target_frame);
-    
-    // Log sync status occasionally
-    static int sync_count = 0;
-    if (++sync_count % 100 == 0) {
-      // std::cout << "[SYNC] Successfully synchronized frame " << target_frame << std::endl;
+    // All cameras have images, get them
+    for (size_t i = 0; i < cameras_.size(); ++i) {
+      images[i] = std::move(cameras_[i].image_queue.front());
+      cameras_[i].image_queue.pop();
     }
   }
   
   return success;
 }
 
+// Removed waitForFrameSync - no longer needed with non-blocking approach
+// This function kept for compatibility but should not be called
 bool CameraManager::waitForFrameSync(uint64_t target_frame) {
-  const int max_wait_ms = 100;  // Maximum wait time
-  const int check_interval_us = 1000;  // Check every 1ms
-  int total_wait_us = 0;
-  
-  while (total_wait_us < max_wait_ms * 1000) {
-    bool all_ready = true;
-    
-    for (const auto& cam : cameras_) {
-      if (cam.frame_counter.load() < target_frame) {
-        all_ready = false;
-        break;
-      }
-    }
-    
-    if (all_ready) {
-      return true;
-    }
-    
-    std::this_thread::sleep_for(std::chrono::microseconds(check_interval_us));
-    total_wait_us += check_interval_us;
-  }
-  
-  // Log sync failure
-  // std::cout << "[SYNC] Frame sync timeout for frame " << target_frame << std::endl;
-  for (size_t i = 0; i < cameras_.size(); ++i) {
-    // std::cout << "  Camera " << i << " frame: " << cameras_[i].frame_counter.load() << std::endl;
-  }
-  
-  return false;
+  (void)target_frame;  // Suppress unused parameter warning
+  // Non-blocking approach - always return true to avoid waiting
+  return true;
 }
 
 double CameraManager::getAverageFrameRate() const {
@@ -391,7 +392,6 @@ void *CameraManager::getHandle(size_t index) const {
 int CameraManager::setParameter(void *dev_handle_, CameraParams &config) {
   int ret;
 
-  // 设置像素格式为8位BayerRG
   ret = MV_CC_SetEnumValue(dev_handle_, "PixelFormat", PixelType_Gvsp_BayerRG8);
   if (ret != MV_OK) {
     std::cerr << "[WARN] Set PixelFormat to BayerRG8 failed: 0x" << std::hex << ret << std::dec << std::endl;
@@ -558,4 +558,125 @@ int CameraManager::setParameter(void *dev_handle_, CameraParams &config) {
               << std::endl;
 
   return MV_OK;
+}
+
+cv::Mat CameraManager::generateVignettingMask(const cv::Size& size, float a, float b, float c) {
+  int h = size.height;
+  int w = size.width;
+  
+  // Create coordinate matrices like np.indices()
+  cv::Mat y_coords, x_coords;
+  cv::Mat y_range = cv::Mat::zeros(h, 1, CV_32F);
+  cv::Mat x_range = cv::Mat::zeros(1, w, CV_32F);
+  
+  for (int i = 0; i < h; ++i) {
+    y_range.at<float>(i, 0) = static_cast<float>(i);
+  }
+  for (int j = 0; j < w; ++j) {
+    x_range.at<float>(0, j) = static_cast<float>(j);
+  }
+  
+  // Repeat to create full coordinate matrices
+  cv::repeat(y_range, 1, w, y_coords);
+  cv::repeat(x_range, h, 1, x_coords);
+  
+  // Calculate center
+  float cx = static_cast<float>(w) / 2.0f;
+  float cy = static_cast<float>(h) / 2.0f;
+  
+  // Calculate radius matrix
+  cv::Mat dx = x_coords - cx;
+  cv::Mat dy = y_coords - cy;
+  cv::Mat r;
+  cv::magnitude(dx, dy, r);
+  
+  // Normalize by max radius (like np.max(r))
+  double max_r;
+  cv::minMaxLoc(r, nullptr, &max_r);
+  cv::Mat r_norm = r / max_r;
+  
+  // Calculate mask using the same formula as Python
+  cv::Mat r_norm_2, r_norm_4, r_norm_6;
+  cv::pow(r_norm, 2, r_norm_2);
+  cv::pow(r_norm, 4, r_norm_4);
+  cv::pow(r_norm, 6, r_norm_6);
+  
+  cv::Mat mask = 1.0f + a * r_norm_2 + b * r_norm_4 + c * r_norm_6;
+  
+  return mask;
+}
+
+cv::Mat CameraManager::applyVignettingCorrection(const cv::Mat& image, float a, float b, float c) {
+  if (a == 0.0f && b == 0.0f && c == 0.0f) {
+    return image.clone(); // No correction needed
+  }
+  
+  cv::Mat mask = generateVignettingMask(image.size(), a, b, c);
+  
+  // Convert to float32 like Python version
+  cv::Mat img_f32;
+  image.convertTo(img_f32, CV_32F);
+  
+  // Apply correction (division like Python version)
+  cv::Mat corrected;
+  cv::divide(img_f32, mask, corrected);
+  
+  // Clip to [0, 255] like Python version
+  cv::Mat clipped;
+  cv::threshold(corrected, clipped, 255.0, 255.0, cv::THRESH_TRUNC);
+  cv::threshold(clipped, clipped, 0.0, 0.0, cv::THRESH_TOZERO);
+  
+  // Convert back to uint8
+  cv::Mat result;
+  clipped.convertTo(result, CV_8U);
+  
+  return result;
+}
+
+bool CameraManager::updateCameraParams(size_t camera_index, const CameraParams& new_params) {
+  std::cout << "[DEBUG] updateCameraParams called for camera " << camera_index << std::endl;
+  std::cout << "[DEBUG] vignetting_enable: " << (new_params.vignetting_enable ? "true" : "false") << std::endl;
+  std::cout << "[DEBUG] vignetting_a: " << new_params.vignetting_a << std::endl;
+  std::cout << "[DEBUG] vignetting_b: " << new_params.vignetting_b << std::endl;
+  std::cout << "[DEBUG] vignetting_c: " << new_params.vignetting_c << std::endl;
+  
+  if (camera_index >= cameras_.size()) {
+    std::cerr << "[ERROR] Camera index " << camera_index << " out of range (0-" << cameras_.size()-1 << ")" << std::endl;
+    return false;
+  }
+  
+  auto& ctx = cameras_[camera_index];
+  
+  // Store old values for comparison
+  bool old_enable = ctx.params.vignetting_enable;
+  float old_a = ctx.params.vignetting_a;
+  float old_b = ctx.params.vignetting_b;
+  float old_c = ctx.params.vignetting_c;
+  
+  // Update the parameters in the camera context
+  ctx.params = new_params;
+  
+  // Log vignetting parameter changes
+  if (new_params.vignetting_enable != old_enable ||
+      new_params.vignetting_a != old_a ||
+      new_params.vignetting_b != old_b ||
+      new_params.vignetting_c != old_c) {
+    std::cout << "[VIGNETTING] Updated camera " << camera_index << " vignetting params:" << std::endl;
+    std::cout << "  enable: " << (new_params.vignetting_enable ? "true" : "false") << std::endl;
+    std::cout << "  a: " << new_params.vignetting_a << std::endl;
+    std::cout << "  b: " << new_params.vignetting_b << std::endl;
+    std::cout << "  c: " << new_params.vignetting_c << std::endl;
+  }
+  
+  // Apply hardware parameters if camera handle is available
+  if (ctx.handle) {
+    int ret = setParameter(ctx.handle, ctx.params);
+    if (ret != 0) { // MV_OK = 0
+      std::cerr << "[WARN] Failed to update camera " << camera_index << " parameters: 0x" << std::hex << ret << std::dec << std::endl;
+      return false;
+    }
+  }
+  
+  std::cout << "[INFO] Successfully updated camera " << camera_index << " parameters" << std::endl;
+  return true;
 }

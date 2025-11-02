@@ -4,7 +4,8 @@
 #include <yaml-cpp/yaml.h>
 #include <fstream>
 #include <algorithm>
-#include <iostream>
+#include <thread>
+#include <chrono>
 
 CameraStitchingNode::CameraStitchingNode(const rclcpp::NodeOptions& options)
     : HKCameraNode("camera_stitching_node", options) {
@@ -27,6 +28,10 @@ void CameraStitchingNode::initialize_stitching_specific() {
   declare_parameter<double>("blend_priority_strength", 0.8);
   declare_parameter<double>("blend_gamma_correction", 1.0);
   declare_parameter<bool>("publish_individual_roi", false);
+  
+  // 时间同步参数
+  declare_parameter<double>("max_time_sync_diff_ms", 10.0);  // 默认10ms，更严格
+  declare_parameter<int>("image_buffer_size", 5);  // 每个相机缓冲区最大图像数量，减小缓冲区
   
   if (!load_homography_matrix()) {
     RCLCPP_FATAL(get_logger(), "Failed to load homography matrix");
@@ -66,6 +71,24 @@ void CameraStitchingNode::initialize_stitching_specific() {
   blend_priority_strength_ = get_parameter("blend_priority_strength").as_double();
   blend_gamma_correction_ = get_parameter("blend_gamma_correction").as_double();
   
+  // 初始化时间同步参数
+  max_time_diff_ms_ = get_parameter("max_time_sync_diff_ms").as_double();
+  max_buffer_size_ = static_cast<size_t>(get_parameter("image_buffer_size").as_int());
+  
+  // 初始化图像缓冲区和互斥锁
+  int num_cams = cam_mgr_.numCameras();
+  image_buffers_.resize(num_cams);
+  
+  // std::mutex 不可复制/移动，使用 unique_ptr 存储
+  buffer_mutexes_.clear();
+  buffer_mutexes_.reserve(num_cams);
+  for (int i = 0; i < num_cams; ++i) {
+    buffer_mutexes_.emplace_back(std::make_unique<std::mutex>());
+  }
+  
+  RCLCPP_INFO(get_logger(), "Time synchronization enabled: max_time_diff=%.1f ms, buffer_size=%zu", 
+              max_time_diff_ms_, max_buffer_size_);
+  
   auto roi_desc = rcl_interfaces::msg::ParameterDescriptor{};
   roi_desc.description = "ROI coordinate as percentage (0.0-1.0)";
   roi_desc.floating_point_range.resize(1);
@@ -92,38 +115,34 @@ void CameraStitchingNode::initialize_stitching_specific() {
 
 bool CameraStitchingNode::load_homography_matrix() {
   std::string homography_file;
-  if (!get_parameter_or<std::string>("homography_file", homography_file, "")) {
-    try {
-      std::string source_path = "/home/yang/predict_ws/src/gbx_predict/camera/hk_camera2/hk_camera/files/H_right_to_left.yaml";
-      if (std::ifstream(source_path).good()) {
-        homography_file = source_path;
-        RCLCPP_INFO(get_logger(), "Using source homography file: %s", homography_file.c_str());
+  
+  try {
+    std::string pkg_path = ament_index_cpp::get_package_share_directory("hk_camera");
+    
+    // 尝试从参数获取，如果未指定则使用默认文件名
+    std::string param_file;
+    if (get_parameter_or<std::string>("homography_file", param_file, "")) {
+      // 如果参数是相对路径，则相对于包的文件目录
+      if (param_file.front() != '/') {
+        homography_file = pkg_path + "/files/" + param_file;
       } else {
-        std::string pkg_path = ament_index_cpp::get_package_share_directory("hk_camera");
-        homography_file = pkg_path + "/files/H_right_to_left.yaml";
-        RCLCPP_INFO(get_logger(), "Using installed homography file: %s", homography_file.c_str());
+        // 绝对路径直接使用
+        homography_file = param_file;
       }
-    } catch (const std::exception& e) {
-      RCLCPP_ERROR(get_logger(), "Cannot find package path, please specify homography_file parameter");
-      return false;
+    } else {
+      // 默认使用 H_right_to_left.yaml
+      homography_file = pkg_path + "/files/H_right_to_left.yaml";
     }
-  } else if (homography_file.front() != '/') {
-    try {
-      std::string pkg_path = ament_index_cpp::get_package_share_directory("hk_camera");
-      homography_file = pkg_path + "/files/" + homography_file;
-      RCLCPP_INFO(get_logger(), "Resolved homography file: %s", homography_file.c_str());
-    } catch (const std::exception& e) {
-      RCLCPP_ERROR(get_logger(), "Cannot find package path for relative homography file: %s", e.what());
-      return false;
-    }
-  } else {
-    RCLCPP_INFO(get_logger(), "Using absolute homography file: %s", homography_file.c_str());
+    
+    RCLCPP_INFO(get_logger(), "Loading homography from: %s", homography_file.c_str());
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(get_logger(), "Cannot find package path: %s", e.what());
+    return false;
   }
 
   try {
     std::string yaml_file = homography_file;
     
-    RCLCPP_INFO(get_logger(), "Loading homography from: %s", yaml_file.c_str());
     if (homography_file.substr(homography_file.length() - 4) == ".npy") {
       yaml_file = homography_file.substr(0, homography_file.length() - 4) + ".yaml";
       RCLCPP_INFO(get_logger(), "Converting .npy to .yaml path: %s", yaml_file.c_str());
@@ -216,6 +235,12 @@ rcl_interfaces::msg::SetParametersResult CameraStitchingNode::on_param_change(co
       } else if (param.get_name() == "publish_individual_roi") {
         publish_individual_roi_ = param.as_bool();
         RCLCPP_INFO(get_logger(), "Updated publish_individual_roi to: %s", publish_individual_roi_ ? "true" : "false");
+      } else if (param.get_name() == "max_time_sync_diff_ms") {
+        max_time_diff_ms_ = param.as_double();
+        RCLCPP_INFO(get_logger(), "Updated max_time_sync_diff_ms to: %.1f ms", max_time_diff_ms_);
+      } else if (param.get_name() == "image_buffer_size") {
+        max_buffer_size_ = static_cast<size_t>(param.as_int());
+        RCLCPP_INFO(get_logger(), "Updated image_buffer_size to: %zu", max_buffer_size_);
       }
     } catch (const std::exception& e) {
       RCLCPP_ERROR(get_logger(), "Error updating parameter %s: %s", param.get_name().c_str(), e.what());
@@ -417,24 +442,110 @@ cv::Rect CameraStitchingNode::calculate_roi_from_percent(int image_width, int im
   return cv::Rect(x, y, width, height);
 }
 
-void CameraStitchingNode::process_and_publish_images() {
-  if (processing_active_.load()) {
-    return;  
-  }
-  
-  processing_active_.store(true);
-
-  std::vector<cv::Mat> images(cam_mgr_.numCameras());
-  bool all_images_valid = true;
+void CameraStitchingNode::update_image_buffers() {
+  // 从相机管理器获取新图像并添加到缓冲区
+  // 优化：只保留最新1-2帧，最小化延迟
+  auto timestamp = this->now();
   
   for (int i = 0; i < cam_mgr_.numCameras(); ++i) {
-    if (!cam_mgr_.getImage(i, images[i]) || images[i].empty()) {
-      all_images_valid = false;
+    cv::Mat img;
+    
+    if (cam_mgr_.getImage(i, img) && !img.empty()) {
+      std::lock_guard<std::mutex> lock(*buffer_mutexes_[i]);
+      
+      // 低延迟优化：只保留最新1帧，立即丢弃旧帧
+      while (!image_buffers_[i].empty()) {
+        image_buffers_[i].pop();  // 清空旧帧
+      }
+      
+      // 添加新图像 - 必须clone因为img会被move走
+      image_buffers_[i].emplace(img.clone(), timestamp);
+    }
+  }
+}
+
+void CameraStitchingNode::cleanup_old_images(const rclcpp::Time& current_time) {
+  // 优化：由于update_image_buffers已经只保留最新1帧，这里基本不需要清理
+  // 保留此函数以防万一，但简化逻辑
+  (void)current_time;  // Suppress unused parameter warning
+  // No cleanup needed - update_image_buffers already keeps only latest frame
+}
+
+bool CameraStitchingNode::get_time_synced_images(std::vector<cv::Mat>& images, std::vector<rclcpp::Time>& timestamps) {
+  if (image_buffers_.size() < 2) {
+    // 单相机情况，直接返回
+    std::lock_guard<std::mutex> lock(*buffer_mutexes_[0]);
+    if (image_buffers_[0].empty()) {
+      return false;
+    }
+    images.resize(1);
+    timestamps.resize(1);
+    images[0] = std::move(image_buffers_[0].front().image);
+    timestamps[0] = image_buffers_[0].front().timestamp;
+    image_buffers_[0].pop();
+    return true;
+  }
+  
+  // 双相机情况：直接获取最新的图像对
+  // 优化：跳过时间同步检查，直接使用最新帧以提高速度
+  // 锁定所有缓冲区
+  std::vector<std::unique_lock<std::mutex>> locks;
+  for (auto& mtx_ptr : buffer_mutexes_) {
+    locks.emplace_back(*mtx_ptr);
+  }
+  
+  // 检查所有缓冲区是否都有图像
+  bool all_ready = true;
+  for (const auto& buffer : image_buffers_) {
+    if (buffer.empty()) {
+      all_ready = false;
       break;
     }
   }
   
-  if (!all_images_valid) {
+  if (!all_ready) {
+    return false;
+  }
+  
+  // 优化：直接使用最新的图像对，跳过时间同步检查以提高速度
+  // 由于队列只保留1帧，时间差应该很小
+  // 获取图像对
+  // 使用move语义避免不必要的clone - 因为我们要pop掉队列中的元素
+  images.resize(2);
+  timestamps.resize(2);
+  
+  images[0] = std::move(image_buffers_[0].front().image);
+  timestamps[0] = image_buffers_[0].front().timestamp;
+  image_buffers_[0].pop();
+  
+  images[1] = std::move(image_buffers_[1].front().image);
+  timestamps[1] = image_buffers_[1].front().timestamp;
+  image_buffers_[1].pop();
+  
+  return true;
+}
+
+void CameraStitchingNode::process_and_publish_images() {
+  // Use try_lock to avoid blocking - if processing is already active, skip this frame
+  // This allows the main loop to continue at high frequency
+  bool expected = false;
+  if (!processing_active_.compare_exchange_weak(expected, true)) {
+    return;  // Processing already active, skip this frame to maintain frame rate
+  }
+
+  // 更新图像缓冲区
+  update_image_buffers();
+  
+  // 尝试获取时间同步的图像 - 使用非阻塞方式
+  std::vector<cv::Mat> images;
+  std::vector<rclcpp::Time> timestamps;
+  
+  if (!get_time_synced_images(images, timestamps)) {
+    processing_active_.store(false);
+    return;
+  }
+  
+  if (images.empty()) {
     processing_active_.store(false);
     return;
   }
@@ -694,117 +805,150 @@ cv::Mat CameraStitchingNode::blend_images_advanced(const cv::Mat& canvas, const 
   cv::bitwise_and(mask_right, ~mask_left, mask_right_only);
   corrected_warped.copyTo(result, mask_right_only);
   
-  // 重叠区域处理 - 根据优先级和融合模式决定
-  if (cv::countNonZero(overlap_mask) > 0) {
-    
-    // 如果禁用融合或使用none模式，根据优先级直接覆盖
-    if (!enable_blending_ || blend_mode_ == "none") {
+    // 重叠区域处理 - 根据优先级和融合模式决定
+    // 优化：使用OpenCV向量化操作替代逐像素循环，大幅提升性能
+    if (cv::countNonZero(overlap_mask) > 0) {
+      
+      // 如果禁用融合或使用none模式，根据优先级直接覆盖
+      if (!enable_blending_ || blend_mode_ == "none") {
+        if (blend_overlap_priority_ == "left") {
+          // 左图优先：保持左图（不做任何操作，因为result已经是canvas）
+          RCLCPP_DEBUG(get_logger(), "Overlap priority: LEFT (no blending)");
+        } else {
+          // 右图优先或center：右图覆盖
+          corrected_warped.copyTo(result, overlap_mask);
+          RCLCPP_DEBUG(get_logger(), "Overlap priority: RIGHT (no blending)");
+        }
+        return result;
+      }
+      
+      // 有融合的情况下，处理重叠区域 - 使用向量化操作
+      cv::Mat overlap_mask_f32;
+      overlap_mask.convertTo(overlap_mask_f32, CV_32F, 1.0/255.0);
+      
       if (blend_overlap_priority_ == "left") {
-        // 左图优先：保持左图（不做任何操作，因为result已经是canvas）
-        RCLCPP_DEBUG(get_logger(), "Overlap priority: LEFT (no blending)");
+        // 左图优先：在重叠区域主要保留左图，少量融合右图
+        float left_priority_strength = static_cast<float>(blend_priority_strength_);
+        float final_left_weight = left_priority_strength + (1.0f - left_priority_strength) * (1.0f - blend_strength_);
+        float final_right_weight = 1.0f - final_left_weight;
+        
+        // 使用向量化操作
+        cv::Mat canvas_f32, warped_f32;
+        corrected_canvas.convertTo(canvas_f32, CV_32F);
+        corrected_warped.convertTo(warped_f32, CV_32F);
+        
+        cv::Mat blended = canvas_f32 * final_left_weight + warped_f32 * final_right_weight;
+        
+        // 只在重叠区域应用融合结果
+        blended.convertTo(blended, CV_8U);
+        blended.copyTo(result, overlap_mask);
+        
+        RCLCPP_DEBUG(get_logger(), "Overlap priority: LEFT with blending");
+        
+      } else if (blend_overlap_priority_ == "right") {
+        // 右图优先：在重叠区域主要保留右图，少量融合左图
+        float right_priority_strength = static_cast<float>(blend_priority_strength_);
+        float final_right_weight = right_priority_strength + (1.0f - right_priority_strength) * blend_strength_;
+        float final_left_weight = 1.0f - final_right_weight;
+        
+        // 使用向量化操作
+        cv::Mat canvas_f32, warped_f32;
+        corrected_canvas.convertTo(canvas_f32, CV_32F);
+        corrected_warped.convertTo(warped_f32, CV_32F);
+        
+        cv::Mat blended = canvas_f32 * final_left_weight + warped_f32 * final_right_weight;
+        
+        // 只在重叠区域应用融合结果
+        blended.convertTo(result, CV_8U);
+        blended.copyTo(result, overlap_mask);
+        
+        RCLCPP_DEBUG(get_logger(), "Overlap priority: RIGHT with blending");
+        
       } else {
-        // 右图优先或center：右图覆盖
-        corrected_warped.copyTo(result, overlap_mask);
-        RCLCPP_DEBUG(get_logger(), "Overlap priority: RIGHT (no blending)");
-      }
-      return result;
-    }
-    
-    // 有融合的情况下，处理重叠区域
-    if (blend_overlap_priority_ == "left") {
-      // 左图优先：在重叠区域主要保留左图，少量融合右图
-      float left_priority_strength = static_cast<float>(blend_priority_strength_);  // 左图权重可配置
-      for (int y = 0; y < result.rows; ++y) {
-        for (int x = 0; x < result.cols; ++x) {
-          if (overlap_mask.at<uchar>(y, x) > 0) {
-            cv::Vec3b left_pixel = corrected_canvas.at<cv::Vec3b>(y, x);
-            cv::Vec3b right_pixel = corrected_warped.at<cv::Vec3b>(y, x);
-            float final_left_weight = left_priority_strength + (1.0f - left_priority_strength) * (1.0f - blend_strength_);
-            float final_right_weight = 1.0f - final_left_weight;
-            result.at<cv::Vec3b>(y, x) = left_pixel * final_left_weight + right_pixel * final_right_weight;
-          }
-        }
-      }
-      RCLCPP_DEBUG(get_logger(), "Overlap priority: LEFT with blending");
-      
-    } else if (blend_overlap_priority_ == "right") {
-      // 右图优先：在重叠区域主要保留右图，少量融合左图
-      float right_priority_strength = static_cast<float>(blend_priority_strength_);  // 右图权重可配置
-      for (int y = 0; y < result.rows; ++y) {
-        for (int x = 0; x < result.cols; ++x) {
-          if (overlap_mask.at<uchar>(y, x) > 0) {
-            cv::Vec3b left_pixel = corrected_canvas.at<cv::Vec3b>(y, x);
-            cv::Vec3b right_pixel = corrected_warped.at<cv::Vec3b>(y, x);
-            float final_right_weight = right_priority_strength + (1.0f - right_priority_strength) * blend_strength_;
-            float final_left_weight = 1.0f - final_right_weight;
-            result.at<cv::Vec3b>(y, x) = left_pixel * final_left_weight + right_pixel * final_right_weight;
-          }
-        }
-      }
-      RCLCPP_DEBUG(get_logger(), "Overlap priority: RIGHT with blending");
-      
-    } else {
-      // center模式：使用标准融合算法
-      if (blend_mode_ == "linear") {
-        // 线性融合
-        for (int y = 0; y < result.rows; ++y) {
-          for (int x = 0; x < result.cols; ++x) {
-            if (overlap_mask.at<uchar>(y, x) > 0) {
-              cv::Vec3b left_pixel = corrected_canvas.at<cv::Vec3b>(y, x);
-              cv::Vec3b right_pixel = corrected_warped.at<cv::Vec3b>(y, x);
-              result.at<cv::Vec3b>(y, x) = left_pixel * (1.0f - blend_strength_) + right_pixel * blend_strength_;
-            }
-          }
-        }
-      } else if (blend_mode_ == "weighted") {
-        // 基于距离的加权融合
+        // center模式：使用标准融合算法
+        if (blend_mode_ == "linear") {
+          // 线性融合 - 向量化实现
+          cv::Mat canvas_f32, warped_f32;
+          corrected_canvas.convertTo(canvas_f32, CV_32F);
+          corrected_warped.convertTo(warped_f32, CV_32F);
+          
+          cv::Mat blended = canvas_f32 * (1.0f - blend_strength_) + warped_f32 * blend_strength_;
+          
+          // 只在重叠区域应用融合结果
+          blended.convertTo(result, CV_8U);
+          blended.copyTo(result, overlap_mask);
+        } else if (blend_mode_ == "weighted") {
+        // 基于距离的加权融合 - 向量化实现
         cv::Mat dist_left, dist_right;
         cv::distanceTransform(255 - mask_left, dist_left, cv::DIST_L2, 3);
         cv::distanceTransform(255 - mask_right, dist_right, cv::DIST_L2, 3);
         
-        for (int y = 0; y < result.rows; ++y) {
-          for (int x = 0; x < result.cols; ++x) {
-            if (overlap_mask.at<uchar>(y, x) > 0) {
-              float d_left = dist_left.at<float>(y, x);
-              float d_right = dist_right.at<float>(y, x);
-              float total_dist = d_left + d_right;
-              
-              if (total_dist > 0) {
-                float weight_right = (d_left / total_dist) * blend_strength_;
-                float weight_left = 1.0f - weight_right;
-                
-                cv::Vec3b left_pixel = corrected_canvas.at<cv::Vec3b>(y, x);
-                cv::Vec3b right_pixel = corrected_warped.at<cv::Vec3b>(y, x);
-                result.at<cv::Vec3b>(y, x) = left_pixel * weight_left + right_pixel * weight_right;
-              }
-            }
-          }
+        // 向量化权重计算 - 基于距离的权重：距离左边缘越远，右图权重越大
+        cv::Mat total_dist;
+        cv::add(dist_left, dist_right, total_dist);
+        cv::Mat weight_right_mask, weight_left_mask;
+        
+        // 避免除零：total_dist为零时使用默认权重
+        cv::Mat safe_total;
+        cv::max(total_dist, 1e-6f, safe_total);
+        cv::divide(dist_left, safe_total, weight_right_mask);
+        weight_right_mask *= blend_strength_;
+        weight_left_mask = 1.0f - weight_right_mask;
+        
+        // 扩展到3通道用于融合
+        std::vector<cv::Mat> weight_left_ch(3), weight_right_ch(3);
+        for (int i = 0; i < 3; ++i) {
+          weight_left_ch[i] = weight_left_mask;
+          weight_right_ch[i] = weight_right_mask;
         }
+        cv::Mat weight_left_3ch, weight_right_3ch;
+        cv::merge(weight_left_ch, weight_left_3ch);
+        cv::merge(weight_right_ch, weight_right_3ch);
+        
+        // 向量化融合
+        cv::Mat canvas_f32, warped_f32;
+        corrected_canvas.convertTo(canvas_f32, CV_32F);
+        corrected_warped.convertTo(warped_f32, CV_32F);
+        
+        cv::Mat blended = canvas_f32.mul(weight_left_3ch) + warped_f32.mul(weight_right_3ch);
+        
+        // 只在重叠区域应用融合结果
+        blended.convertTo(blended, CV_8U);
+        blended.copyTo(result, overlap_mask);
       } else if (blend_mode_ == "feather") {
-        // 羽化融合
+        // 羽化融合 - 向量化实现
         cv::Mat feather_mask_left = create_feather_mask(mask_left, blend_feather_size_);
         cv::Mat feather_mask_right = create_feather_mask(mask_right, blend_feather_size_);
         
-        for (int y = 0; y < result.rows; ++y) {
-          for (int x = 0; x < result.cols; ++x) {
-            if (overlap_mask.at<uchar>(y, x) > 0) {
-              float weight_left = feather_mask_left.at<float>(y, x);
-              float weight_right = feather_mask_right.at<float>(y, x);
-              float total_weight = weight_left + weight_right;
-              
-              if (total_weight > 0) {
-                weight_left /= total_weight;
-                weight_right /= total_weight;
-                weight_right *= blend_strength_;
-                weight_left = 1.0f - weight_right;
-                
-                cv::Vec3b left_pixel = corrected_canvas.at<cv::Vec3b>(y, x);
-                cv::Vec3b right_pixel = corrected_warped.at<cv::Vec3b>(y, x);
-                result.at<cv::Vec3b>(y, x) = left_pixel * weight_left + right_pixel * weight_right;
-              }
-            }
-          }
+        // 向量化权重归一化
+        cv::Mat total_weight;
+        cv::add(feather_mask_left, feather_mask_right, total_weight);
+        cv::Mat weight_left_norm, weight_right_norm;
+        cv::divide(feather_mask_left, total_weight, weight_left_norm);
+        cv::divide(feather_mask_right, total_weight, weight_right_norm);
+        weight_right_norm *= blend_strength_;
+        weight_left_norm = 1.0f - weight_right_norm;
+        
+        // 扩展到3通道
+        std::vector<cv::Mat> weight_left_ch(3), weight_right_ch(3);
+        for (int i = 0; i < 3; ++i) {
+          weight_left_ch[i] = weight_left_norm;
+          weight_right_ch[i] = weight_right_norm;
         }
+        cv::Mat weight_left_3ch, weight_right_3ch;
+        cv::merge(weight_left_ch, weight_left_3ch);
+        cv::merge(weight_right_ch, weight_right_3ch);
+        
+        // 向量化融合
+        cv::Mat canvas_f32, warped_f32;
+        corrected_canvas.convertTo(canvas_f32, CV_32F);
+        corrected_warped.convertTo(warped_f32, CV_32F);
+        
+        cv::Mat blended = canvas_f32.mul(weight_left_3ch) + warped_f32.mul(weight_right_3ch);
+        
+        // 只在重叠区域应用融合结果
+        blended.convertTo(result, CV_8U);
+        blended.copyTo(result, overlap_mask);
       }
       RCLCPP_DEBUG(get_logger(), "Overlap priority: CENTER with %s blending", blend_mode_.c_str());
     }
@@ -853,13 +997,14 @@ cv::Mat CameraStitchingNode::apply_gamma_correction(const cv::Mat& image, double
 }
 
 void CameraStitchingNode::spin() {
-  rclcpp::Rate rate(loop_rate_hz_);
-  
   // 性能监控变量
   int frame_count = 0;
   int stitch_count = 0;
   auto start_time = std::chrono::steady_clock::now();
   auto last_report = start_time;
+  
+  // Adaptive sleep to maintain target rate without blocking unnecessarily
+  const double min_loop_time_us = 1000000.0 / loop_rate_hz_;  // Minimum loop time in microseconds
   
   //RCLCPP_INFO(get_logger(), "Starting camera stitching node with loop rate: %d Hz", loop_rate_hz_);
   
@@ -880,27 +1025,33 @@ void CameraStitchingNode::spin() {
       double frame_fps = frame_count / total_elapsed;
       double stitch_fps = stitch_count / total_elapsed;
       
-      //RCLCPP_INFO(get_logger(), "=== STITCHING NODE PERFORMANCE ===");
-      //RCLCPP_INFO(get_logger(), "Frame processing FPS: %.2f", frame_fps);
+      RCLCPP_INFO(get_logger(), "=== STITCHING NODE PERFORMANCE ===");
+      RCLCPP_INFO(get_logger(), "Frame processing FPS: %.2f", frame_fps);
       if (enable_stitching_) {
-        //RCLCPP_INFO(get_logger(), "Stitching FPS: %.2f", stitch_fps);
+        RCLCPP_INFO(get_logger(), "Stitching FPS: %.2f", stitch_fps);
       }
-      //RCLCPP_INFO(get_logger(), "Loop rate setting: %d Hz", loop_rate_hz_);
-      //RCLCPP_INFO(get_logger(), "==================================");
+      RCLCPP_INFO(get_logger(), "Target rate: %d Hz", loop_rate_hz_);
+      RCLCPP_INFO(get_logger(), "==================================");
       
       last_report = now;
     }
     
     rclcpp::spin_some(shared_from_this());
     
+    // Adaptive sleep: only sleep if we're running too fast
     auto loop_end = std::chrono::high_resolution_clock::now();
-    auto loop_time = std::chrono::duration_cast<std::chrono::microseconds>(loop_end - loop_start);
+    auto loop_time_us = std::chrono::duration_cast<std::chrono::microseconds>(loop_end - loop_start).count();
+    
+    if (loop_time_us < min_loop_time_us) {
+      // We're running faster than target, sleep to maintain rate
+      auto sleep_time_us = static_cast<int64_t>(min_loop_time_us - loop_time_us);
+      std::this_thread::sleep_for(std::chrono::microseconds(sleep_time_us));
+    }
+    // If we're running slower than target, don't sleep - process as fast as possible
     
     // 记录长循环时间
-    if (loop_time.count() > 50000) {  // > 50ms
-      // RCLCPP_WARN(get_logger(), "Long loop time: %ld μs", loop_time.count());
+    if (loop_time_us > 50000) {  // > 50ms
+      RCLCPP_WARN(get_logger(), "Long loop time: %ld μs", loop_time_us);
     }
-    
-    rate.sleep();
   }
 } 

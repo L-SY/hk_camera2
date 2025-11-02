@@ -6,7 +6,9 @@
 #include <memory>
 #include <string>
 #include <atomic>
-#include <rclcpp/rclcpp.hpp>
+#include <queue>
+#include <mutex>
+#include <memory>
 
 class CameraStitchingNode : public HKCameraNode {
 public:
@@ -40,6 +42,16 @@ private:
     cv::Mat create_feather_mask(const cv::Mat& mask, int feather_size);
     cv::Mat apply_gamma_correction(const cv::Mat& image, double gamma);
     
+    // 时间同步相关结构
+    struct TimestampedImage {
+        cv::Mat image;
+        rclcpp::Time timestamp;
+        rclcpp::Time capture_time;  // 图像捕获时的系统时间
+        
+        TimestampedImage(const cv::Mat& img, const rclcpp::Time& ts) 
+            : image(img), timestamp(ts), capture_time(ts) {}  // Image will be cloned when added to queue
+    };
+    
     // 图像拼接相关
     cv::Mat homography_matrix_;
     cv::Mat stitched_result_;
@@ -67,6 +79,17 @@ private:
     double blend_priority_strength_;
     double blend_gamma_correction_;
     std::atomic<bool> processing_active_{false};
+    
+    // 时间同步缓冲区
+    std::vector<std::queue<TimestampedImage>> image_buffers_;
+    std::vector<std::unique_ptr<std::mutex>> buffer_mutexes_;  // 使用指针避免复制/移动问题
+    double max_time_diff_ms_;  // 允许的最大时间差（毫秒）
+    size_t max_buffer_size_;   // 每个缓冲区的最大大小
+    
+    // 时间同步相关方法
+    bool get_time_synced_images(std::vector<cv::Mat>& images, std::vector<rclcpp::Time>& timestamps);
+    void update_image_buffers();
+    void cleanup_old_images(const rclcpp::Time& current_time);
 };
 
 #endif // CAMERA_STITCHING_NODE_HPP 
